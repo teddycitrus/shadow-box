@@ -54,6 +54,32 @@ describe('room', () => {
     expect(room.match?.paused).toBe(false);
   });
 
+  it('gives a seat left in the lobby to a new player, but not one left mid-match', () => {
+    const { room, a, b, ready } = setup();
+    room.leave(b);
+    const c = conn();
+    expect(room.join(c)).toBe(1);
+    room.handle(a, 0, ready);
+    room.handle(c, 1, ready);
+    room.leave(c);
+    expect(room.join(conn())).toBeNull();
+  });
+
+  it('tells late joiners about a pause and about the result', () => {
+    const { room, a, b, ready, clock } = setup();
+    room.handle(a, 0, ready);
+    room.handle(b, 1, ready);
+    room.leave(b);
+    const s = conn();
+    room.watch(s);
+    expect(s.msgs).toContainEqual({ t: 'event', ev: { e: 'paused', reason: 'disconnect' } });
+    clock.advance(RULES.rejoinMs + 10);
+    room.tick();
+    const s2 = conn();
+    room.watch(s2);
+    expect(s2.msgs).toContainEqual({ t: 'event', ev: { e: 'matchEnd', result: { kind: 'forfeit', winner: 0 } } });
+  });
+
   it('forfeits after the rejoin window', () => {
     const { room, a, b, ready, clock } = setup();
     room.handle(a, 0, ready);

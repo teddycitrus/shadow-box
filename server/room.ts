@@ -42,7 +42,13 @@ export class Room {
   join(conn: Conn, token?: string): Slot | null {
     const slot = this.players.findIndex((p) => p && token && p.token === token);
     if (slot >= 0) return this.attach(slot as Slot, conn);
-    const free = this.players.findIndex((p) => p === null);
+    let free = this.players.findIndex((p) => p === null);
+    // Outside a live match, a seat whose player has left can go to someone new.
+    if (free < 0 && !(this.match && ACTIVE.has(this.match.phase))) {
+      free = this.players.findIndex((p) => !p?.conn);
+      // The old result belongs to the player who left, so the newcomer starts from the lobby.
+      if (free >= 0) this.match = null;
+    }
     if (free < 0) return null;
     this.players[free] = {
       token: randomBytes(12).toString('hex'), conn: null, calibrated: false, ready: false,
@@ -58,6 +64,7 @@ export class Room {
     if (this.match?.paused && this.players.every((x) => x?.conn)) this.match.resume(this.now());
     this.sendLobby();
     this.sendState(true);
+    this.catchUp(conn);
     return slot;
   }
 
@@ -66,6 +73,14 @@ export class Room {
     conn.send({ t: 'joined', code: this.code, role: 'spectator', slot: null, token: null });
     this.sendLobby();
     this.sendState(true);
+    this.catchUp(conn);
+  }
+
+  /** Replays the event a late joiner needs to show the right screen (pause banner or result). */
+  private catchUp(conn: Conn): void {
+    const m = this.match;
+    if (m?.paused) conn.send({ t: 'event', ev: { e: 'paused', reason: 'disconnect' } });
+    else if (m?.result) conn.send({ t: 'event', ev: { e: 'matchEnd', result: m.result } });
   }
 
   leave(conn: Conn): void {

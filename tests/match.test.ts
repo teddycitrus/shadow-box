@@ -86,7 +86,8 @@ describe('match flow', () => {
     m.pause(t + 500, 'disconnect');
     m.setDefense(1, NO_DEFENSE, t + 5_000, t + 5_000);
     m.resume(t + 10_000);
-    hit(m, t + 10_000);
+    m.tick(t + 10_000);
+    hit(m, t + 10_400);
     expect(m.fighters[1].hp).toBe(83.5);
   });
 
