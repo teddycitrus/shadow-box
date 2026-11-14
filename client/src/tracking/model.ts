@@ -53,7 +53,7 @@ export class KnnModel {
       .map((s) => Math.min(...this.data.filter((o) => o !== s && o.label === s.label).map((o) => d(o.v, s.v))))
       .filter(Number.isFinite)
       .sort((a, b) => a - b);
-    this.radius = nn.length ? Math.max(1.5, nn[Math.floor(nn.length / 2)] * rejectScale) : Infinity;
+    this.radius = nn.length ? Math.max(3.5, nn[Math.floor(nn.length / 2)] * rejectScale) : Infinity;
   }
 
   private norm(v: number[]): number[] {
