@@ -45,6 +45,7 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
     document.body.classList.add('spectating');
   }
 
+  let lastPhase = '';
   link.handlers = {
     lobby(ps, spectators) {
       const el = app.querySelector('.watch-status');
@@ -54,6 +55,8 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
       el.textContent = `${joined}/2 fighters in the room, ${ready} ready. ${spectators} watching.`;
     },
     state(s) {
+      if (s.phase === 'countdown' && lastPhase !== 'countdown') hud.hideBanner();
+      lastPhase = s.phase;
       hud.setState(s);
       avatars.forEach((a, i) => a.setGassed(s.fighters[i].gassed));
       document.body.classList.toggle('fighting', s.phase !== 'lobby');
@@ -78,7 +81,7 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
       }
       if (ev.e === 'knockdown') avatars[ev.slot as Slot].playReaction({ kind: 'knockdown' });
       if (ev.e === 'getUp') avatars[ev.slot].playReaction({ kind: 'getUp' });
-      if (ev.e === 'roundStart' && opts.demo) avatars.forEach((a) => a.playReaction({ kind: 'reset' }));
+      if (ev.e === 'roundStart') avatars.forEach((a) => a.playReaction({ kind: 'reset' }));
     },
   };
 

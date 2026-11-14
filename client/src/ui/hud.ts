@@ -74,6 +74,14 @@ export class Hud {
     b.callTimer = window.setTimeout(() => b.call.classList.remove('on'), 900);
   }
 
+  /** True while the match is paused (late joiners learn this from the snapshot). */
+  paused = false;
+
+  hideBanner(): void {
+    clearTimeout(this.bannerTimer);
+    this.banner.classList.remove('on');
+  }
+
   setNames(names: [string, string]): void {
     this.bars.forEach((b, i) => (b.name.textContent = names[i]));
   }
@@ -83,7 +91,10 @@ export class Hud {
     this.snapAt = performance.now();
     s.fighters.forEach((f, i) => this.setFighter(i as Slot, f));
     this.round.textContent = s.phase === 'break' ? `Round ${s.round + 1} next` : s.phase === 'countdown' ? 'Get ready' : `Round ${Math.max(1, s.round)} of ${RULES.rounds}`;
-    const down = s.fighters.find((f) => f.status === 'down');
+    if (s.paused && !this.paused) this.show('Paused', 0);
+    else if (!s.paused && this.paused && this.banner.textContent === 'Paused') this.hideBanner();
+    this.paused = s.paused;
+    const down = s.phase === 'ended' ? undefined : s.fighters.find((f) => f.status === 'down');
     this.count.textContent = down ? String(down.count) : '';
     this.count.classList.toggle('on', !!down);
   }
@@ -148,5 +159,6 @@ export class Hud {
 export function resultText(r: MatchResult, names: [string, string]): string {
   if (r.winner === null) return 'Draw';
   const how = { ko: 'by knockout', tko: 'by technical knockout', decision: 'on points', forfeit: 'by forfeit', draw: '' }[r.kind];
-  return `${names[r.winner]} wins ${how}`;
+  const who = names[r.winner];
+  return `${who} ${who === 'You' ? 'win' : 'wins'} ${how}`;
 }

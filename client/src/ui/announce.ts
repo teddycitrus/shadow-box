@@ -17,7 +17,9 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
       sound.sfx('bell');
       say(ev.round === 1 ? 'round1' : ev.round === 2 ? 'round2' : 'round3');
       hud.show(ev.round === 3 ? 'Final round' : `Round ${ev.round}`, 1500, 'round');
-      setTimeout(() => hud.show('Fight', 700, 'fight'), 1500);
+      setTimeout(() => {
+        if (!hud.paused) hud.show('Fight', 700, 'fight');
+      }, 1500);
       break;
     case 'roundEnd':
       sound.sfx('bell_end');

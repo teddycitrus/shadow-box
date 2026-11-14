@@ -184,8 +184,11 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       opp.setGassed(oppF.gassed);
       const fighting = s.phase !== 'lobby' && s.phase !== 'ended';
       document.body.classList.toggle('fighting', fighting || s.phase === 'ended');
-      if (fighting && first) endPanel.classList.remove('on');
-      if (me.status === 'down') hud.setSub(`Hold your guard to get up  ${Math.round(me.getUpProgress * 100)}%`);
+      if (fighting && first) {
+        endPanel.classList.remove('on');
+        hud.hideBanner();
+      }
+      if (me.status === 'down' && s.phase !== 'ended') hud.setSub(`Hold your guard to get up  ${Math.round(me.getUpProgress * 100)}%`);
       else if (s.paused) hud.setSub(`Opponent disconnected. Waiting ${Math.ceil((rejoinMs ?? 0) / 1000)} s for them to rejoin.`);
       else if (me.exhausted && s.phase === 'round') hud.setSub('Exhausted. Breathe and hold your guard.');
       else if (s.phase === 'break') hud.setSub(`Rest. Round ${s.round + 1} in ${Math.ceil(s.clockMs / 1000)}`);
@@ -233,6 +236,9 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
         break;
       case 'knockdown':
         if (ev.slot === oppSlot) opp.playReaction({ kind: 'knockdown' });
+        break;
+      case 'roundStart':
+        opp.playReaction({ kind: 'reset' });
         break;
       case 'getUp':
         if (ev.slot === oppSlot) opp.playReaction({ kind: 'getUp' });
