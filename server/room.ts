@@ -30,6 +30,7 @@ export class Room {
   match: Match | null = null;
   lastActivity: number;
   private lastState = 0;
+  private seq = 1;
 
   constructor(readonly code: string, private now: () => number) {
     this.lastActivity = now();
@@ -159,7 +160,7 @@ export class Room {
   private flush(): void {
     if (!this.match) return;
     const evs = this.match.drain();
-    for (const ev of evs) this.broadcast({ t: 'event', ev });
+    for (const ev of evs) this.broadcast({ t: 'event', ev, at: this.now(), id: this.seq++ });
     if (evs.length) this.sendState(true);
   }
 

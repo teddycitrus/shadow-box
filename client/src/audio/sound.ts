@@ -69,6 +69,29 @@ export class Sound {
   private files = new Map<string, AudioBuffer>();
   private speaking: Promise<void> = Promise.resolve();
   muted = false;
+  /** Extra delay (s) applied to every sound started inside cue(), to line up with other viewers. */
+  private cueDelay = 0;
+  private seedState = (Math.random() * 2 ** 32) >>> 0;
+
+  /** Seeded random, so every client makes the same crowd and variation choices for an event. */
+  rand(): number {
+    let t = (this.seedState += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  /** Runs fn with all its sounds delayed by delaySec and random choices seeded from the event id. */
+  cue(delaySec: number, seed: number | undefined, fn: () => void): void {
+    const prevDelay = this.cueDelay;
+    if (seed !== undefined) this.seedState = Math.imul(seed, 2654435761) >>> 0;
+    this.cueDelay = Math.max(0, delaySec);
+    try {
+      fn();
+    } finally {
+      this.cueDelay = prevDelay;
+    }
+  }
   private loaded: Promise<void> | null = null;
   private listeners: (() => void)[] = [];
 
@@ -158,9 +181,9 @@ export class Sound {
     if (opts.cooldownMs && nowMs - (this.lastPlayed.get(name) ?? -Infinity) < opts.cooldownMs) return;
     this.lastPlayed.set(name, nowMs);
     const vary = opts.vary ?? VARY.has(name);
-    const rate = vary ? 0.94 + Math.random() * 0.12 : 1;
-    const gain = (opts.gain ?? 1) * (vary ? 0.88 + Math.random() * 0.12 : 1);
-    const delay = Math.max(0, opts.delay ?? 0);
+    const rate = vary ? 0.94 + this.rand() * 0.12 : 1;
+    const gain = (opts.gain ?? 1) * (vary ? 0.88 + this.rand() * 0.12 : 1);
+    const delay = Math.max(0, (opts.delay ?? 0) + this.cueDelay);
     const f = this.files.get(name);
     if (f) {
       this.playBuffer(f, gain * FILE_GAIN[name], rate, delay);
@@ -238,10 +261,15 @@ export class Sound {
     const f = this.files.get(`announcer_${key}`);
     if (f && this.ctx) {
       this.duck(0.6, Math.min(2500, f.duration * 1000));
-      this.playBuffer(f, 1.2);
+      this.playBuffer(f, 1.2, 1, this.cueDelay);
       return;
     }
     if (!('speechSynthesis' in window)) return;
+    if (this.cueDelay > 0) {
+      const wait = this.cueDelay * 1000;
+      setTimeout(() => this.cue(0, undefined, () => this.announce(key)), wait);
+      return;
+    }
     this.speaking = this.speaking.then(() => new Promise<void>((done) => {
       const u = new SpeechSynthesisUtterance(ANNOUNCER_LINES[key]);
       u.rate = 1.05;

@@ -1,5 +1,9 @@
 import type { ClientMsg, DefenseState, Punch, ServerMsg, Slot, Stance, WirePose } from '../../../shared/types.ts';
+import { sound } from '../audio/sound.ts';
 import { noopHandlers, type MatchLink } from './link.ts';
+
+/** Shared audio latency budget: covers network jitter so all viewers hear a cue together. */
+const AUDIO_SYNC_MS = 180;
 
 export type Connect = { create: true } | { join: string } | { watch: string };
 
@@ -81,9 +85,13 @@ export class OnlineLink implements MatchLink {
       case 'state':
         this.handlers.state(m.s, m.rejoinMs);
         break;
-      case 'event':
-        this.handlers.event(m.ev);
+      case 'event': {
+        // Every client schedules the event's sounds for the same server moment (event time plus a
+        // small shared latency budget), with the same seeded random choices.
+        const wait = m.at === undefined ? 0 : Math.min(600, Math.max(0, m.at + AUDIO_SYNC_MS - this.serverTime(performance.now())));
+        sound.cue(wait / 1000, m.id, () => this.handlers.event(m.ev));
         break;
+      }
     }
   }
 

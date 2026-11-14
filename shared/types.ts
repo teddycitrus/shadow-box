@@ -108,7 +108,8 @@ export type ServerMsg =
   | { t: 'lobby'; players: [LobbyPlayer | null, LobbyPlayer | null]; spectators: number }
   | { t: 'pose'; slot: Slot; p: WirePose; def: DefenseState }
   | { t: 'state'; s: MatchSnapshot; rejoinMs: number | null }
-  | { t: 'event'; ev: MatchEvent };
+  /** `at` is the server time of the event and `id` a sequence number, so every client can play the same audio cue at the same moment. */
+  | { t: 'event'; ev: MatchEvent; at?: number; id?: number };
 
 export function other(slot: Slot): Slot {
   return slot === 0 ? 1 : 0;

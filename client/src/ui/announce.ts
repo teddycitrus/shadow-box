@@ -53,17 +53,17 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
         if (big) {
           sound.duck(0.35, 700);
           sound.sfx('ooh', { cooldownMs: 900 });
-        } else if (heavy) sound.sfx(Math.random() < 0.5 ? 'cheer' : 'ooh', { gain: 0.6, cooldownMs: 1500 });
+        } else if (heavy) sound.sfx(sound.rand() < 0.5 ? 'cheer' : 'ooh', { gain: 0.6, cooldownMs: 1500 });
         excite(ev.damage / (big ? 15 : 40));
         if (ev.stagger) say(kind === 'uppercut' ? 'uppercut' : 'big_shot');
       } else if (ev.outcome === 'block') {
         sound.sfx('block');
-        if (Math.random() < 0.35) sound.sfx('crowd_murmur', { cooldownMs: 2500 });
+        if (sound.rand() < 0.35) sound.sfx('crowd_murmur', { cooldownMs: 2500 });
         excite(0.05);
       } else {
         const dodge = ev.outcome === 'dodge';
         sound.sfx('whoosh', { gain: dodge ? 1 : 0.7 });
-        if (dodge && (kind === 'hook' || kind === 'uppercut') && Math.random() < 0.45) {
+        if (dodge && (kind === 'hook' || kind === 'uppercut') && sound.rand() < 0.45) {
           sound.sfx('ooh', { gain: 0.55, delay: 0.1, cooldownMs: 2000 });
           excite(0.2);
         }

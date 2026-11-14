@@ -9,6 +9,7 @@ import { commonEvent } from '../ui/announce.ts';
 import { h } from '../ui/dom.ts';
 import { Hud } from '../ui/hud.ts';
 import { CameraDirector } from './cameras.ts';
+import { sound } from '../audio/sound.ts';
 
 const NAMES: [string, string] = ['Red', 'Blue'];
 
@@ -42,6 +43,12 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
     );
     app.append(waiting);
     document.body.classList.add('spectating');
+    // Browsers keep audio silent until a click; make that obvious for viewers.
+    const tap = h('div', { class: 'tapsound', role: 'status' }, 'Tap anywhere for sound');
+    app.append(tap);
+    const sync = () => tap.classList.toggle('on', !sound.on && !sound.muted);
+    sound.onChange(sync);
+    sync();
   }
 
   let lastPhase = '';
