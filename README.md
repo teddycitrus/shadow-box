@@ -285,11 +285,29 @@ Every sound is synthesized at runtime with the Web Audio API, and the announcer 
 
 To override any sound, drop an mp3 with the matching name into `client/public/audio/`. The game loads it on first interaction and falls back to the synthesizer for anything missing.
 
-- Effects: `hit_light.mp3`, `hit_heavy.mp3`, `block.mp3`, `whoosh.mp3`, `bell.mp3`, `roar.mp3`, `impact_big.mp3` (staggering or 12+ damage hits), `ko_slam.mp3` (knockdowns and KOs), `cheer.mp3`, `ooh.mp3` (big shots), `count_tick.mp3` (referee count), `bell_end.mp3` (end of round)
+Sounds are layered per event in `client/src/ui/announce.ts`:
+
+| Event | Sounds |
+|---|---|
+| Punch thrown | `swoosh` (quiet, louder for hooks and uppercuts) |
+| Hit landed | `hit_light`, `hit_heavy` (9+ damage) or `impact_big` (stagger or 12+), always with a `body_thump`; heavy hits add `cheer` or `ooh`, big hits add `ooh` and duck the crowd |
+| Blocked | `block`, sometimes `crowd_murmur` |
+| Missed or dodged | `whoosh`; a dodged hook or uppercut sometimes gets an `ooh` |
+| Round start | `hype` crowd swell, then `bell`, then the "Fight" call |
+| 10 seconds left | `clapper` (from `clockTick()` in `announce.ts`) |
+| Round end | `bell_end`, `cheer` |
+| Knockdown | `ko_slam`, `roar`, crowd ducked then swelled |
+| Referee count | `count_tick` plus a crowd `stomp` that grows with the count; `chant` at 2 and 6 |
+| Get up | `cheer` |
+| Match end | `bell`; KO or TKO adds `ko_stinger` and `roar`, otherwise `cheer`; a winner gets `fanfare` |
+
+Percussive sounds play with a random +-6% playback rate and slight level jitter so repeats differ. Crowd reactions have cooldowns so they do not stack. The crowd loop (`crowd.mp3`) sits low, swells with `sound.excite(k)` on big moments and ducks under knockdowns, big hits and announcer lines. All effects go through a light bus compressor.
+
+- Effects: `hit_light`, `hit_heavy`, `impact_big`, `body_thump`, `block`, `whoosh`, `swoosh`, `bell`, `bell_end`, `hype`, `clapper`, `roar`, `cheer`, `ooh`, `crowd_murmur`, `chant`, `stomp`, `count_tick`, `ko_slam`, `ko_stinger`, `fanfare` (each as `<name>.mp3`, list in `SFX_NAMES` in `client/src/audio/synth.ts`)
 - Crowd loop: `crowd.mp3`
 - Announcer: `announcer_<key>.mp3`, where `<key>` is one of `welcome`, `round1`, `round2`, `round3`, `fight`, `time`, `down_red`, `down_blue`, `up`, `big_shot`, `uppercut`, `ko`, `tko`, `decision`, `draw`, `forfeit`, `red_wins`, `blue_wins` (lines in `ANNOUNCER_LINES` in `client/src/audio/sound.ts`).
 
-Optionally, `npm run gen:audio` generates all of these with the ElevenLabs API. Put `ELEVENLABS_API_KEY=...` in `.env` at the repo root (see `.env.example`); `ELEVENLABS_VOICE_ID` picks the announcer voice. Existing files are skipped unless you pass `--force`, and `--only=bell,announcer_ko` limits the run. This is never needed to play.
+Optionally, `npm run gen:audio` generates all of these with the ElevenLabs API. Put `ELEVENLABS_API_KEY=...` in `.env` at the repo root (see `.env.example`); `ELEVENLABS_VOICE_ID` picks the announcer voice. Existing files are skipped unless you pass `--force`, and `--only=bell,announcer_ko` limits the run. With `ffmpeg` on PATH, effects are trimmed of leading silence and peak-normalized to -1 dBFS after download (`--polish` reruns that on existing files); `FILE_GAIN` in `sound.ts` sets the mix. This is never needed to play.
 
 ## Project layout
 
