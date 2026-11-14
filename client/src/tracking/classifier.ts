@@ -65,6 +65,7 @@ interface Active {
   maxSpeed: number;
   maxUp: number;
   travel: number;
+  maxDist: number;
   peakScore: number;
   peak: { t: number; f: HandFeatures; img: Lm; z: number; travel: number } | null;
 }
@@ -74,6 +75,8 @@ interface HandState {
   active: Active | null;
   lastFire: number;
   lastMotion: number;
+  /** The last frame before the hand started moving fast, used as the segment start. */
+  rest: { t: number; f: HandFeatures; img: Lm; z: number } | null;
   prev: { img: Lm; z: number; t: number } | null;
 }
 
@@ -182,7 +185,10 @@ export class Classifier {
   private smoothFrame(raw: PoseFrame): PoseFrame {
     const prev = this.smooth;
     if (!prev) return (this.smooth = clone(raw));
-    const a = CONFIG.smoothing.image, b = CONFIG.smoothing.worldZ;
+    // Per-frame factors are tuned at 30 fps; convert them to time constants so 60 fps cameras match.
+    const dt = Math.max(1, raw.t - prev.t);
+    const at = (k: number) => 1 - Math.pow(1 - k, dt / (1000 / 30));
+    const a = at(CONFIG.smoothing.image), b = at(CONFIG.smoothing.worldZ);
     const mix = (p: Lm, r: Lm, k: number, kz: number): Lm => ({
       x: p.x + (r.x - p.x) * k, y: p.y + (r.y - p.y) * k, z: p.z + (r.z - p.z) * kz, v: r.v,
     });
@@ -203,25 +209,32 @@ export class Classifier {
       return null;
     }
     if (st.mode === 'ready') {
+      const before = st.rest;
+      st.rest = { t, f, img: { ...img }, z };
       if (f.speed < c.startSpeed) return null;
       st.mode = 'active';
-      st.active = { startT: t, start: f, startImg: { ...img }, startZ: z, maxSpeed: f.speed, maxUp: 0, travel: 0, peakScore: -Infinity, peak: null };
+      const s0 = before && t - before.t < 200 ? before : st.rest;
+      st.active = { startT: s0.t, start: s0.f, startImg: s0.img, startZ: s0.z, maxSpeed: f.speed, maxUp: f.vUp, travel: 0, maxDist: 0, peakScore: -Infinity, peak: null };
     }
     const a = st.active!;
     st.lastMotion = t;
     a.maxSpeed = Math.max(a.maxSpeed, f.speed);
     a.maxUp = Math.max(a.maxUp, f.vUp);
-    a.travel = Math.max(a.travel, Math.hypot(img.x - a.startImg.x, img.y - a.startImg.y) / sw + Math.max(0, a.startZ - z) / this.cal.swWorld);
+    const dist = Math.hypot(img.x - a.startImg.x, img.y - a.startImg.y) / sw;
+    a.maxDist = Math.max(a.maxDist, dist);
+    a.travel = Math.max(a.travel, dist + Math.max(0, a.startZ - z) / this.cal.swWorld);
     const score = this.extensionScore(f, a, img, z, sw);
     if (score > a.peakScore) {
       a.peakScore = score;
       a.peak = { t, f, img: { ...img }, z, travel: a.travel };
     }
-    const stopped = f.speed < a.maxSpeed * c.stopFraction;
+    const reversed = a.maxDist > c.minTravel && dist < a.maxDist * c.reverseFraction;
+    const stopped = f.speed < a.maxSpeed * c.stopFraction || reversed;
     const tooLong = t - a.startT > c.maxDurationMs;
     if (!stopped && !tooLong) return null;
 
     st.active = null;
+    st.rest = null;
     const punch = this.classify(hand, a, chinY, sw, t);
     if (!punch || !this.canPunch) {
       st.mode = 'ready';
@@ -300,7 +313,7 @@ export function ruleDecision(seg: Segment, stance: Stance): Punch | null {
 }
 
 function newHand(): HandState {
-  return { mode: 'ready', active: null, lastFire: -Infinity, lastMotion: -Infinity, prev: null };
+  return { mode: 'ready', active: null, lastFire: -Infinity, lastMotion: -Infinity, rest: null, prev: null };
 }
 
 function clone(f: PoseFrame): PoseFrame {

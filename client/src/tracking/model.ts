@@ -10,11 +10,14 @@ export interface Sample {
   v: number[];
 }
 
-/** Per-segment feature vector for the learned classifier. */
+/**
+ * Per-segment feature vector for the learned classifier. Elbow angles are left out: MediaPipe's
+ * 3D elbow is too noisy to separate punches (it still gates them, see passesGate).
+ */
 export function vector(s: Segment): number[] {
   return [
-    s.dIn, s.rise, s.fwd, s.forward, s.elbow / 45, (s.elbow - s.startElbow) / 45, s.startY, s.peakY,
-    s.startHead, s.peakHead, s.scaleGain, s.travel, s.maxSpeed / 5, s.maxUp / 5, s.reach, (s.peakT - s.startT) / 150,
+    s.dIn, s.rise, s.fwd, s.forward, s.startY, s.peakY, s.startHead, s.peakHead, s.scaleGain,
+    s.travel, s.maxSpeed / 5, s.maxUp / 5, s.reach, s.reach - s.startReach, (s.peakT - s.startT) / 150,
   ];
 }
 

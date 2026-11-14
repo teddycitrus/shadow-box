@@ -1,63 +1,98 @@
 # Recording classifier fixtures
 
-The classifier tests in `tests/classifier.test.ts` use synthetic poses by default. Recorded clips of real people in `tests/fixtures/` are replayed through the same `Classifier` to check that real punches are detected with the right type, once each.
+The classifier tests in `tests/classifier.test.ts` use synthetic poses, plus recorded clips of a real player in `tests/fixtures/`. The recorded clips are replayed through the same `Classifier` to check that the per-player k-NN learns real punches from a short calibration and that guard, ducks and slips are detected. The same clips drive the evaluation scripts in `scripts/`.
 
-## Recording a clip
+## Recording
+
+The guided recorder (`client/src/ui/tuner.ts`) walks through every move and saves one clip per move.
 
 1. Run `npm run dev`.
-2. Open http://localhost:5173/practice?record=1&debug=1 (or the `npm run tunnel` URL with the same query, when recording on another device). `record=1` adds the recorder panel; `debug=1` shows the classifier features and the last punch decision live.
-3. Calibrate: hold your guard steady for 2 seconds until the lobby says Calibrated.
-4. Press **Record**.
-5. Throw one move about 5 times, returning to guard between each one.
-6. Press **Stop**, then **Save JSON**. The browser downloads `pose-<timestamp>.json`.
-7. Move the file into `tests/fixtures/` (create the folder if needed) and give it a descriptive name, for example `orthodox-jab-head-x5.json`.
-8. Edit its `"expected"` array to list the punch types you threw, in order. Values: `jab`, `cross`, `leftHook`, `rightHook`, `leftUppercut`, `rightUppercut`. For five jabs:
+2. Open http://localhost:5173/practice?debug=1&record=1. `record=1` adds the recorder panel; `debug=1` shows the classifier features and the last punch decision live.
+3. Pick your stance, then calibrate: hold your guard steady for 2 seconds. Finish the teach step or press **Skip, use defaults**; the recorder only starts once calibration is complete.
+4. Follow the 12 steps. For each one, get in your guard, press **Start recording**, do the move 5 times with a return to guard after each, then press **Done, save**. The panel shows what the classifier detected while you record. **Redo** restarts the current step and **Skip** moves on without saving.
 
-   ```json
-   "expected": ["jab", "jab", "jab", "jab", "jab"]
-   ```
+| Step | Move | File id |
+| --- | --- | --- |
+| 1 | Jab to the head | `jab-head` |
+| 2 | Cross to the head | `cross-head` |
+| 3 | Left hook to the head | `lhook-head` |
+| 4 | Right hook to the head | `rhook-head` |
+| 5 | Left uppercut | `luppercut` |
+| 6 | Right uppercut | `ruppercut` |
+| 7 | Jab to the body | `jab-body` |
+| 8 | Cross to the body | `cross-body` |
+| 9 | High guard: drop your hands, then raise both gloves to your face and hold 1 s | `guard` |
+| 10 | Duck, then come back up | `duck` |
+| 11 | Slip left, then back | `slip-left` |
+| 12 | Slip right, then back | `slip-right` |
 
-9. Run `npm test`.
+Each clip saves itself as `tests/fixtures/<stance>-<id>.json`, for example `orthodox-jab-head.json`, replacing any clip with the same name. Saving goes through a dev-only endpoint (`POST /__fixtures/<name>`, the `fixture-writer` plugin in `vite.config.ts`), so it only works on the Vite dev server. Anywhere else, for example the production build behind `npm run tunnel`, the browser downloads the file instead and you move it into `tests/fixtures/` yourself.
 
-The recorder captures every tracked frame while Record is on, and pressing Record again clears the previous take. Calibrate before you save: the file stores the current calibration, which is `null` before calibration finishes, and the test cannot replay a clip without it.
+Then run `npm test`.
 
 ## File format
 
-The recorder in `client/src/views/player.ts` writes:
-
 ```json
 {
+  "move": "jab-head",
+  "stance": "orthodox",
   "calibration": {
     "swImg": 0.27,
     "swWorld": 0.38,
     "armWorld": 0.55,
     "noseX": 0.9,
     "noseY": 0.32,
-    "handSize": { "left": 0.25, "right": 0.25 }
+    "handSize": { "left": 0.25, "right": 0.25 },
+    "guardY": -0.6,
+    "guardHead": 0.7
   },
+  "expected": ["jab", "jab", "jab", "jab", "jab"],
+  "expectedTarget": "head",
+  "reps": 5,
   "frames": [
     {
       "t": 12345.6,
       "img":   [{ "x": 0.91, "y": 0.31, "z": -0.6, "v": 0.99 }],
       "world": [{ "x": 0.01, "y": -0.55, "z": -0.3, "v": 0.99 }]
     }
-  ],
-  "expected": []
+  ]
 }
 ```
 
-- `calibration` is the `Calibration` measured during the 2 s guard hold (`client/src/tracking/calibration.ts`): shoulder width in image units and in metres, arm length in metres, the neutral nose position, and wrist-to-index hand size per hand.
-- `frames` is every `PoseFrame` (`client/src/tracking/frame.ts`) seen while recording:
+- `move` is the step id from the table above.
+- `stance` is the stance selected in the lobby, `orthodox` or `southpaw`.
+- `calibration` is the `Calibration` measured during the 2 s guard hold (`client/src/tracking/calibration.ts`): shoulder width in image units and in metres, arm length in metres, the neutral nose position, wrist-to-index hand size per hand, and the guard wrist height and wrist-to-nose distance in shoulder widths.
+- `expected` lists the `PunchType` thrown, once per rep, for punch steps, and is `[]` for defense steps.
+- `expectedTarget` is `head` or `body` for punch steps; it is left out of defense clips.
+- `defense` is `guard`, `duck`, `slipLeft` or `slipRight` for defense steps; it is left out of punch clips.
+- `reps` is the number of reps prompted (5).
+- `frames` is every raw `PoseFrame` (`client/src/tracking/frame.ts`) seen while recording:
   - `t` is the `performance.now()` timestamp in milliseconds.
   - `img` holds all 33 MediaPipe Pose landmarks in normalized image space, with `x` multiplied by the frame aspect ratio so `x` and `y` share a unit (the frame height).
   - `world` holds the same 33 landmarks in MediaPipe world space, in metres.
   - Each landmark is `{x, y, z, v}`, where `v` is visibility.
-- `expected` is saved empty; you fill it in. It lists the `PunchType` values the classifier should emit for the whole clip, in order.
 
-The "recorded fixtures" test reads every `.json` file in `tests/fixtures/`, builds a `new Classifier(calibration)`, feeds it every frame in order, and compares the emitted punch types with `expected`. The test always uses the classifier's default orthodox stance, so record fixtures in orthodox stance (left jab, right cross).
+## What the tests assert
 
-A file without an `"expected"` key is skipped. An empty `"expected": []` is not skipped: it asserts that no punch fires, which is useful for clips of guard, ducks, slips or idle movement.
+The "recorded fixtures" block in `tests/classifier.test.ts` loads every `.json` file in `tests/fixtures/` that has a calibration and at least one frame (`loadFixtures` in `scripts/eval-core.ts`). It skips itself when there are none.
 
-## When a fixture fails
+Labelling: each clip is replayed with the classifier's `onSegment` hook to collect every motion that passes the gate. In a punch clip, the `reps` strongest motions of the expected hand (ranked by peak speed times travel, at least 450 ms apart) get the label `<type>:<expectedTarget>`; every other gated motion is labelled `none`.
 
-Replay the same moves with `?debug=1` and read the `last:` line, which explains why the classifier accepted or rejected the last punch. Thresholds for punch detection, punch types, head/body split, defense and framing live in `client/src/config.ts`. After changing them, run `npm test` to make sure both the synthetic cases and every fixture still pass.
+- **Model:** simulates the teach step chronologically. In each clip, the first 3 labelled reps and every motion before the third one ends train a k-NN with k = 3; the rest is the test set (clips without punches split in half). The test requires at least 70% of test punches classified exactly (type and target) and at most 25% of test non-punch motions firing as a punch.
+- **Defense:** replays the `guard`, `duck`, `slip-left` and `slip-right` clips (found by file name) and counts onsets. It needs at least 4 guards, 4 ducks, 3 left slips and 3 right slips.
+- **Accidental ducks:** across all punch clips, the total number of duck onsets must be at most a quarter of the number of punch clips.
+
+## Evaluating and tuning
+
+```sh
+npx tsx scripts/eval-model.ts --verbose
+npx tsx scripts/eval-defense.ts
+npx tsx scripts/dump-segments.ts jab-head
+```
+
+- `eval-model.ts` prints how many motions pass the gate, then punch exact and false-fire counts for the hand-written rules, k-NN leave-one-out with k = 1, 3 and 5, randomized 2-rep and 3-rep calibrations, and the chronological 2-rep and 3-rep calibrations the test uses. `--verbose` adds the labelled peak times per clip and a confusion list for each classifier.
+- `eval-defense.ts` prints guard, duck, left slip and right slip onsets per clip, and the share of frames in guard.
+- `dump-segments.ts <filter> [minTravel]` prints the features of every motion segment in clips whose name contains `<filter>`, for segments travelling at least `minTravel` shoulder widths (default 0.45).
+- `analyze-fixtures.ts [filter] [--trace]` prints every rule decision and defense change per clip; `--trace` adds per-frame hand features.
+
+Thresholds for smoothing, segmentation, the gate, the rules, the model and defense live in `client/src/config.ts`. After changing them, run `npm test` to make sure the synthetic cases and every fixture still pass.

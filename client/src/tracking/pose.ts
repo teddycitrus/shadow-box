@@ -22,7 +22,7 @@ export class PoseTracker {
 
   async start(): Promise<void> {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 }, facingMode: 'user' },
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 60 }, facingMode: 'user' },
       audio: false,
     });
     this.video.srcObject = stream;

@@ -4,6 +4,7 @@
  * one unit is the frame height.
  */
 export const CONFIG = {
+  /** Exponential smoothing per frame at 30 fps (scaled for other frame rates). */
   smoothing: { image: 0.6, worldZ: 0.45 },
 
   framing: {
@@ -22,6 +23,8 @@ export const CONFIG = {
   punch: {
     startSpeed: 3.0,
     stopFraction: 0.35,
+    /** A segment also ends once the hand comes back this fraction of its furthest distance. */
+    reverseFraction: 0.8,
     maxDurationMs: 450,
     minTravel: 0.45,
     cooldownMs: 250,

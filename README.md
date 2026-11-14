@@ -24,7 +24,12 @@ A browser boxing game you play with your body. A webcam and MediaPipe pose track
 
 ### Calibration
 
-Hold your guard (both gloves up by your face) steady for 2 seconds. The game measures your shoulder width, arm length and guard position and scales every threshold to your body. Pick Orthodox or Southpaw, then press Ready. Use Recalibrate if tracking feels off.
+1. Pick Orthodox or Southpaw first. Teaching uses your stance to know which hand throws the jab.
+2. Hold your guard (both gloves up by your face) steady for 2 seconds. The game measures your shoulder width, arm length, hand size and guard position and scales every threshold to your body.
+3. Teach your punches, about 60 s. An overlay on the webcam prompts 8 punches in turn: jab, cross, left hook, right hook, left uppercut, right uppercut, jab to the body, cross to the body. Throw each one 3 times, back to guard after each (a step moves on after 3 reps or 9 s). Then duck, slip left and slip right, 3.5 s each. Punches do not count during this step.
+4. Press Ready.
+
+The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v2:v2`) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
 
 ### Moves
 
@@ -34,7 +39,7 @@ Hold your guard (both gloves up by your face) steady for 2 seconds. The game mea
 | Cross | Punch straight at the camera with your rear hand. |
 | Left / right hook | Elbow bent, hand around shoulder height, swing across. |
 | Left / right uppercut | Start below your chin and drive the fist up. |
-| Head or body | Decided by wrist height at the peak of the punch: above a line just under your shoulders is a head shot, below it is a body shot. |
+| Head or body | With a taught profile, learned from your head and body jab and cross reps (hooks and uppercuts are taught to the head). With the default rules, decided by wrist height at the peak of the punch: above a line just under your shoulders is a head shot, below it is a body shot. |
 | High guard | Both gloves up by your face. |
 | Duck | Drop your head well down. |
 | Slip left / right | Move your head to the side. |
@@ -67,7 +72,7 @@ flowchart LR
   subgraph PA["Player client"]
     Cam(["Webcam"])
     MP["MediaPipe Pose Landmarker<br/><sub>33 landmarks per frame, local WASM</sub>"]
-    CL["Classifier<br/><sub>punches at peak, guard/duck/slip</sub>"]
+    CL["Classifier<br/><sub>segments, gate, k-NN or rules, guard/duck/slip</sub>"]
     Link["OnlineLink<br/><sub>clock sync, reconnect, rejoin token</sub>"]
     View["Three.js view<br/><sub>first person, HUD, sound</sub>"]
   end
@@ -115,7 +120,7 @@ sequenceDiagram
 
   Cam->>PT: video frame
   PT->>CL: PoseFrame (img + world landmarks)
-  CL->>CL: track hand speed, fire once at peak extension
+  CL->>CL: segment the hand motion, gate it, classify with k-NN or rules
   CL->>OL: punch {type, hand, target, at = peak time}
   Note over OL: at converted to server time with the<br/>clock offset from ping/pong
   OL->>R: punch message {punch, at}
@@ -154,6 +159,51 @@ Hard limits:
 - A disconnect mid-match pauses it; the player has 60 s to rejoin with the token stored in `localStorage`, then forfeits.
 - Rooms with nobody connected are dropped after 10 minutes without activity.
 
+### Move classification
+
+`client/src/tracking/classifier.ts` turns each tracked frame into punch events and a defense state. Thresholds live in `client/src/config.ts`; distances are in calibrated shoulder widths (sw).
+
+```mermaid
+flowchart LR
+  F(["PoseFrame"])
+  SM["Smoothing<br/><sub>image 0.6, world z 0.45</sub>"]
+  SEG["Per-hand segmenter<br/><sub>start on speed, peak at max extension</sub>"]
+  G{"Gate<br/><sub>travel and elbow opening</sub>"}
+  Q{"Profile with<br/>learned punches?"}
+  K["Per-player k-NN<br/><sub>k = 3, from the teach step</sub>"]
+  R["Hand-written rules<br/><sub>uppercut, hook, straight</sub>"]
+  P(["Punch event<br/><sub>at = peak time</sub>"])
+  X["No punch"]
+  N["Head offset<br/><sub>from a drifting neutral</sub>"]
+  D(["Defense state<br/><sub>guard, duck, slip</sub>"])
+
+  F --> SM --> SEG --> G
+  G -->|"pass"| Q
+  G -->|"fail"| X
+  Q -->|"yes"| K
+  Q -->|"no"| R
+  K -->|"punch label"| P
+  K -.->|"none"| X
+  R --> P
+  R -.->|"no match"| X
+  SM --> N --> D
+```
+
+Punch pipeline, per hand:
+
+1. **Segment:** a motion starts when hand speed reaches 3.0 sw/s. The peak is the frame with the highest extension score (3D reach, depth toward the camera, on-screen hand growth and distance travelled). The motion ends when speed drops below 35% of its maximum, or after 450 ms.
+2. **Gate:** the motion must travel at least 0.45 sw and the elbow must open by at least 15 degrees. Anything else is not a punch, whichever classifier is active.
+3. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 16-number feature vector of the motion (sideways sweep, rise, depth, elbow angles, wrist height, distance to the head, travel, speed, duration) against the player's own taught samples of the same hand, standardized and with distance-weighted votes. Labels are `type:target` or `none`, so the teach step also learns which motions are not punches (returning to guard, adjusting). Without a profile the hand-written rules decide.
+4. **Fire:** the punch is sent with the peak time. The hand stays locked until it is back near the face and the cooldown has passed.
+
+Defense, every frame:
+
+- **Neutral:** the head offset is measured from a neutral nose position that starts at the calibrated one and follows slow drift (3 s time constant) while the head is within half a duck or slip threshold, so stepping around does not read as a slip.
+- **Duck and slip** fire when the offset passes 0.55 sw down or 0.5 sw sideways. The teach step personalizes each to half of the deepest duck or slip you showed, if it reached at least 60% of the default, and never below half the default. Slips are ignored during a hand motion and for 300 ms after, since punching moves the head.
+- **Guard** needs both hands out of a motion, slow and up by the face. The height and head-distance limits are the defaults or, if looser, your calibrated guard position plus 0.3 sw, with 0.2 sw of hysteresis once held.
+
+On the 12 recorded clips in `tests/fixtures/` (one orthodox player), the hand-written rules get 19% of gated punches exactly right. The per-player k-NN gets 81% in leave-one-out, and 82% exact with 1 false fire in 13 non-punch motions when trained, as in the teach step, on the first 3 reps of each clip. Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
+
 ## Getting Started
 
 Requires Node.js 24. `npm run tunnel` also needs [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) on your PATH.
@@ -182,8 +232,19 @@ This starts a cloudflared quick tunnel to http://localhost:3000 and prints a pub
 Checks:
 
 ```sh
-npm test          # Vitest: classifier, hit resolution, match rules, rooms
+npm test          # Vitest: classifier, teach step, recorded fixtures, hit resolution, match rules, rooms
 npm run typecheck # tsc --noEmit
+```
+
+### Tuning
+
+These scripts replay the recorded clips in `tests/fixtures/` through the classifier. Recording clips is covered in [FIXTURES.md](FIXTURES.md).
+
+```sh
+npx tsx scripts/eval-model.ts --verbose    # rules vs k-NN: leave-one-out and simulated 2/3-rep calibrations
+npx tsx scripts/eval-defense.ts            # guard, duck and slip onsets per clip
+npx tsx scripts/dump-segments.ts jab-head  # every motion segment's features in matching clips
+npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense change, --trace for per-frame features
 ```
 
 ### URLs
@@ -202,7 +263,7 @@ npm run typecheck # tsc --noEmit
 | --- | --- |
 | `?keys=1` | Keyboard mode, no camera. Keys below. |
 | `?debug=1` | Shows classifier features, defense state and match numbers. |
-| `?record=1` | Shows a recorder for capturing classifier test fixtures. See [FIXTURES.md](FIXTURES.md). |
+| `?record=1` | Shows a guided recorder that saves labelled clips of every move into `tests/fixtures/`. See [FIXTURES.md](FIXTURES.md). |
 
 Keyboard mode keys:
 
@@ -240,13 +301,13 @@ client/
     mediapipe/wasm/   copied from node_modules by scripts/copy-assets.mjs
   src/
     main.ts           routing: title, practice, create, play, watch
-    config.ts         classifier, calibration and framing thresholds
+    config.ts         classifier, gate, model, defense, calibration and framing settings
     audio/            sound manager and synthesizer
     net/              MatchLink interface and the WebSocket OnlineLink
     practice/         Bot, PracticeLink and the title screen DemoLink
     scene/            Three.js stage, arena, avatars, first-person gloves
-    tracking/         PoseTracker, calibration, classifier, keyboard input, synthetic poses
-    ui/               HUD, announcer events, webcam preview, DOM helpers
+    tracking/         PoseTracker, calibration, classifier, k-NN model, teach step, keyboard input, synthetic poses
+    ui/               HUD, announcer events, webcam preview, fixture recorder, DOM helpers
     views/            player (first person) and spectator views
 server/
   index.ts            HTTP static server, WebSocket /ws, room registry
@@ -259,7 +320,11 @@ shared/
 scripts/
   copy-assets.mjs     copies MediaPipe WASM into client/public
   gen-audio.ts        optional ElevenLabs audio generation
+  eval-*.ts           classifier evaluation on recorded fixtures (eval-core.ts is shared with the tests)
+  dump-segments.ts    prints motion segment features
+  analyze-fixtures.ts prints classifier decisions per clip
 tests/                Vitest suites, plus recorded fixtures in tests/fixtures/
+vite.config.ts        Vite config, with a dev-only endpoint that saves recorder clips
 ```
 
 ## License

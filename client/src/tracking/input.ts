@@ -38,7 +38,8 @@ export interface InputSource {
   skipTeach(): void;
 }
 
-const PROFILE_KEY = 'shadowbox:profile';
+/** Bump when the feature vector changes so old profiles are not reused. */
+const PROFILE_KEY = 'shadowbox:profile:v2';
 
 export const SW_METRES = 0.38;
 
