@@ -1,4 +1,4 @@
-# Shadow Box
+# Keyboard Warrior
 
 A browser boxing game you play with your body. A webcam and MediaPipe pose tracking turn your punches, guard, ducks and slips into moves in a Three.js arena, for 1v1 matches over WebSocket with spectators, or practice against a bot.
 

@@ -1,0 +1,22 @@
+.campicker {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 11;
+  display: flex; gap: 4px; padding: 5px; border-radius: 999px;
+  background: rgba(10, 11, 16, 0.86); border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 14px 40px -16px rgba(0, 0, 0, 0.9);
+}
+.campicker:empty { display: none; }
+.campicker button {
+  display: flex; align-items: center; gap: 7px; border: 0; border-radius: 999px; padding: 7px 13px 7px 8px;
+  background: transparent; color: #c9c7cf; font: 600 13px var(--body, sans-serif); cursor: pointer; white-space: nowrap;
+  transition: background 160ms cubic-bezier(0.16, 1, 0.3, 1), color 160ms;
+}
+.campicker button:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.campicker button.on { background: #e9c46a; color: #141414; }
+.campicker button kbd { min-width: 1.5em; padding: 0 5px; font-size: 11px; background: rgba(255, 255, 255, 0.1); border-color: transparent; color: inherit; }
+.campicker button.on kbd { background: rgba(0, 0, 0, 0.15); }
+body.spectating .caption { bottom: calc(7vh + 48px); }
+@media (max-width: 800px) {
+  .campicker { left: 8px; right: 8px; transform: none; overflow-x: auto; justify-content: flex-start; border-radius: 12px; }
+  .campicker button kbd { display: none; }
+}
+body.spectating .zones { display: none; }

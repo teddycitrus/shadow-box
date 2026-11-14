@@ -8,10 +8,11 @@ import { Stage } from '../scene/stage.ts';
 import { commonEvent } from '../ui/announce.ts';
 import { h } from '../ui/dom.ts';
 import { Hud } from '../ui/hud.ts';
+import { CameraDirector } from './cameras.ts';
 
 const NAMES: [string, string] = ['Red', 'Blue'];
 
-/** Side view of both fighters with a slow orbiting camera. Spectators send no input. */
+/** Both fighters in the ring with a per-viewer camera choice. Spectators send no input. */
 export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?: string; demo?: boolean } = {}): void {
   const host = h('div', { class: 'stage' });
   app.append(host);
@@ -28,6 +29,9 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
   const sparks = new Sparks();
   stage.scene.add(sparks.object);
   const tmp = new THREE.Vector3();
+  const cams = new CameraDirector(stage.camera, avatars.map((a) => a.object), !opts.demo);
+  if (!opts.demo) app.append(cams.el);
+  else cams.set('broadcast');
   let hitStopUntil = [0, 0];
 
   if (!opts.demo) {
@@ -61,6 +65,7 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
       if (performance.now() >= hitStopUntil[slot]) avatars[slot].setPose(p);
     },
     event(ev: MatchEvent) {
+      cams.event(ev);
       if (!opts.demo) commonEvent(ev, hud, NAMES, stage.scene);
       if (ev.e === 'land' && (ev.outcome === 'hit' || ev.outcome === 'block')) {
         const def = avatars[other(ev.attacker)];
@@ -85,9 +90,6 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
       if (performance.now() >= hitStopUntil[i]) a.update(dt);
     });
     sparks.update(dt);
-    const ang = t * 0.08;
-    const r = opts.demo ? 4.6 : 4.0;
-    stage.camera.position.set(Math.sin(ang) * r, 1.9 + Math.sin(t * 0.21) * 0.25, Math.cos(ang) * r);
-    stage.camera.lookAt(0, 1.15, 0);
+    cams.update(dt, t);
   });
 }

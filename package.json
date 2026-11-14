@@ -1,5 +1,5 @@
 {
-  "name": "shadow-box",
+  "name": "keyboard-warrior",
   "version": "0.1.0",
   "description": "Webcam-controlled browser boxing game. MediaPipe pose tracking, Three.js arena, WebSocket 1v1 and spectators.",
   "author": "teddycitrus",

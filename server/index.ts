@@ -118,7 +118,7 @@ export function startServer(port: number, opts: { tickMs?: number } = {}): Promi
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const PORT = Number(process.env.PORT ?? 3000);
   startServer(PORT).then(({ port }) => {
-    console.log(`Shadow Box server on http://localhost:${port}`);
+    console.log(`Keyboard Warrior server on http://localhost:${port}`);
     if (!existsSync(ROOT)) console.log('dist/client is missing; run npm run build (or use npm run dev on :5173)');
   });
 }
