@@ -20,31 +20,42 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
       setTimeout(() => hud.show('Fight', 700, 'fight'), 1500);
       break;
     case 'roundEnd':
-      sound.sfx('bell');
+      sound.sfx('bell_end');
+      sound.sfx('cheer');
       say('time');
       hud.show('Time', 1500);
       break;
     case 'land':
       if (ev.outcome === 'hit') {
-        sound.sfx(ev.damage >= 9 ? 'hit_heavy' : 'hit_light');
-        exciteCrowd(scene, ev.damage / 40);
+        const big = ev.stagger || ev.damage >= 12;
+        sound.sfx(big ? 'impact_big' : ev.damage >= 9 ? 'hit_heavy' : 'hit_light');
+        if (big) sound.sfx('ooh');
+        else if (ev.damage >= 9 && Math.random() < 0.5) sound.sfx('cheer');
+        exciteCrowd(scene, ev.damage / (big ? 15 : 40));
         if (ev.stagger) say(punchKind(ev.punch.type) === 'uppercut' ? 'uppercut' : 'big_shot');
       } else if (ev.outcome === 'block') sound.sfx('block');
       else sound.sfx('whoosh');
       break;
     case 'knockdown':
+      sound.sfx('ko_slam');
       sound.sfx('roar');
       exciteCrowd(scene, 1);
       say(ev.slot === 0 ? 'down_red' : 'down_blue');
       hud.show('Down', 1200, 'down');
       break;
+    case 'count':
+      if (ev.n > 1) sound.sfx('count_tick');
+      break;
     case 'getUp':
       say('up');
+      sound.sfx('cheer');
       break;
     case 'matchEnd': {
       sound.sfx('bell');
       const r = ev.result;
+      sound.sfx('cheer');
       if (r.kind === 'ko' || r.kind === 'tko') {
+        sound.sfx('ko_slam');
         sound.sfx('roar');
         exciteCrowd(scene, 1);
       }

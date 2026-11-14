@@ -20,6 +20,12 @@ const SFX: Record<string, { text: string; seconds: number; loop?: boolean }> = {
   whoosh: { text: 'Fast single fist swing through air, short whoosh', seconds: 0.5 },
   bell: { text: 'Boxing ring bell, three quick metallic dings', seconds: 2 },
   roar: { text: 'Arena crowd erupting in a loud cheer after a knockout', seconds: 3 },
+  impact_big: { text: 'Massive cinematic boxing knockout punch impact, crunchy leather smack with a deep bass boom and short reverb tail, no crowd', seconds: 1.2 },
+  ko_slam: { text: 'Huge slow-motion knockout impact, heavy body slamming onto a boxing ring canvas, deep boom with ring ropes rattling, dramatic reverb', seconds: 2 },
+  cheer: { text: 'Boxing arena crowd cheering and clapping excitedly for a few seconds', seconds: 2.5 },
+  ooh: { text: 'Large arena crowd reacting with a loud collective oooh to a big punch', seconds: 1.8 },
+  count_tick: { text: 'Single hard referee hand slap on a boxing ring canvas, sharp thump', seconds: 0.5 },
+  bell_end: { text: 'Single long boxing ring bell ding ringing out to end a round', seconds: 2.5 },
   crowd: { text: 'Steady indoor boxing arena crowd murmur, distant chatter, even level, seamless loop', seconds: 10, loop: true },
 };
 

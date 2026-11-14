@@ -23,7 +23,7 @@ export const ANNOUNCER_LINES = {
 
 export type LineKey = keyof typeof ANNOUNCER_LINES;
 
-const SFX: SfxName[] = ['hit_light', 'hit_heavy', 'block', 'whoosh', 'bell', 'roar'];
+const SFX: SfxName[] = ['hit_light', 'hit_heavy', 'block', 'whoosh', 'bell', 'roar', 'impact_big', 'ko_slam', 'cheer', 'ooh', 'count_tick', 'bell_end'];
 
 /**
  * Sound manager. Uses a file from public/audio/ when one exists (for example hit_heavy.mp3 or
