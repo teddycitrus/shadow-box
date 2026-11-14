@@ -11,10 +11,11 @@ const fmt = (ms: number) => {
 /** Top bar (HP, stamina, round clock), centre banners, referee count and hit feedback. */
 export class Hud {
   readonly root = h('div', { class: 'hud' });
-  private bars: { hp: HTMLElement; hpGhost: HTMLElement; st: HTMLElement; stNum: HTMLElement; kd: HTMLElement; box: HTMLElement; name: HTMLElement; def: HTMLElement; call: HTMLElement; callTimer: number; lastHp: number }[] = [];
+  private bars: { hp: HTMLElement; hpGhost: HTMLElement; st: HTMLElement; stNum: HTMLElement; kd: HTMLElement; box: HTMLElement; name: HTMLElement; def: HTMLElement; call: HTMLElement; callTimer: number; lastHp: number; chain: number; lastCall: number }[] = [];
   private names: [string, string];
   private clock = h('div', { class: 'clock' }, '1:00');
   private round = h('div', { class: 'round' }, `Round 1 of ${RULES.rounds}`);
+  private pips = h('div', { class: 'pips', 'aria-hidden': 'true' }, ...Array.from({ length: RULES.rounds }, () => h('i')));
   private banner = h('div', { class: 'banner' });
   private count = h('div', { class: 'count' });
   private sub = h('div', { class: 'subline' });
@@ -39,22 +40,22 @@ export class Hud {
       const def = h('span', { class: 'defchip' });
       const call = h('div', { class: 'callout' });
       const box = h('div', { class: `side ${i ? 'blue' : 'red'}` },
-        h('div', { class: 'name' }, h('span', { class: 'plate-name' }, name), kd, def),
         h('div', { class: 'plate' },
           h('div', { class: 'bar hpbar' }, hpGhost, hp),
-          h('div', { class: 'strow' },
-            h('div', { class: 'bar stbar' }, st),
-            h('div', { class: 'stlabel' }, h('span', {}, 'Stamina'), stNum),
-          ),
+        ),
+        h('div', { class: 'name' }, h('span', { class: 'plate-name' }, name), kd, def),
+        h('div', { class: 'strow' },
+          h('div', { class: 'bar stbar' }, st),
+          h('div', { class: 'stlabel' }, h('span', {}, 'Stamina'), stNum),
         ),
         call,
       );
-      this.bars.push({ hp, hpGhost, st, stNum, kd, box, name, def, call, callTimer: 0, lastHp: RULES.maxHp });
+      this.bars.push({ hp, hpGhost, st, stNum, kd, box, name, def, call, callTimer: 0, lastHp: RULES.maxHp, chain: 0, lastCall: 0 });
       return box;
     };
     for (const z of ['head-left', 'head-right', 'body-left', 'body-right'] as Zone[]) this.zones.append(h('i', { 'data-zone': z }));
     this.root.append(
-      h('div', { class: 'topbar' }, side(0), h('div', { class: 'center' }, this.clock, this.round), side(1)),
+      h('div', { class: 'topbar' }, side(0), h('div', { class: 'center' }, h('div', { class: 'kobadge', 'aria-hidden': 'true' }, 'KO'), this.clock, this.round, this.pips), side(1)),
       this.banner, this.count, this.sub, this.caption, this.flashL, this.flashR, this.zones,
     );
   }
@@ -73,7 +74,12 @@ export class Hud {
     const names: Record<string, string> = {
       jab: 'Jab', cross: 'Cross', leftHook: 'Left hook', rightHook: 'Right hook', leftUppercut: 'Left uppercut', rightUppercut: 'Right uppercut',
     };
-    b.call.textContent = `${names[p.type]}${p.target === 'body' ? ' to the body' : ''}`;
+    const now = performance.now();
+    b.chain = now - b.lastCall < 1200 ? b.chain + 1 : 1;
+    b.lastCall = now;
+    b.call.textContent = `${p.target === 'body' ? 'Body ' : ''}${names[p.type]}!`;
+    if (b.chain > 1) b.call.dataset.chain = `x${b.chain}`;
+    else delete b.call.dataset.chain;
     b.call.classList.remove('on');
     void b.call.offsetWidth;
     b.call.classList.add('on');
@@ -99,6 +105,7 @@ export class Hud {
     this.snapAt = performance.now();
     s.fighters.forEach((f, i) => this.setFighter(i as Slot, f));
     this.round.textContent = s.phase === 'break' ? `Round ${s.round + 1} next` : s.phase === 'countdown' ? 'Get ready' : `Round ${Math.max(1, s.round)} of ${RULES.rounds}`;
+    [...this.pips.children].forEach((p, i) => p.classList.toggle('on', s.phase !== 'lobby' && i < Math.max(1, s.round)));
     if (s.paused && !this.paused) this.show('Paused', 0);
     else if (!s.paused && this.paused && this.banner.textContent === 'Paused') this.hideBanner();
     this.paused = s.paused;
@@ -143,12 +150,18 @@ export class Hud {
   audible = true;
 
   show(text: string, ms = 1400, kind = ''): void {
-    this.banner.textContent = text;
+    const kids: HTMLElement[] = [h('span', { class: 'bt', 'data-text': text }, text)];
     let side = '';
-    if (kind === 'result') {
+    if (kind.startsWith('result')) {
       const [r, b] = this.names;
       side = text.startsWith(`${r} `) ? 'red' : text.startsWith(`${b} `) ? 'blue' : 'draw';
+      const winner = side === 'red' ? 0 : side === 'blue' ? 1 : -1;
+      const ko = / (ko|tko)\b/.test(kind);
+      const perfect = winner >= 0 && (ko || / decision\b/.test(kind)) && this.bars[winner].lastHp >= RULES.maxHp;
+      const stamp = perfect ? 'Perfect' : ko ? 'K.O.' : '';
+      if (stamp) kids.unshift(h('span', { class: 'stamp', 'data-text': stamp, 'aria-hidden': 'true' }, stamp));
     }
+    this.banner.replaceChildren(...kids);
     this.banner.className = 'banner';
     void this.banner.offsetWidth;
     this.banner.className = `banner on ${kind} ${side}`.trim();

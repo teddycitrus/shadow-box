@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { W, type Punch, type WirePose } from '../../../shared/types.ts';
 import type { Corner } from './avatar.ts';
+import { outlineMaterial, toonGradient } from './fx.ts';
 
 /** The player's own gloves in the foreground, following their wrists (mirrored). */
 export class FirstPersonGloves {
   readonly object = new THREE.Group();
   private gloves: THREE.Mesh[] = [];
   private target = [new THREE.Vector3(0.16, -0.25, -0.45), new THREE.Vector3(-0.16, -0.25, -0.45)];
-  private mat = new THREE.MeshStandardMaterial({ color: 0xc1121f, roughness: 0.35 });
+  private mat = new THREE.MeshToonMaterial({ color: 0xc1121f, gradientMap: toonGradient() });
   private guard = false;
   private guardK = 0;
   private swing: { k: number; punch: Punch; t: number } | null = null;
@@ -15,14 +16,19 @@ export class FirstPersonGloves {
 
   constructor() {
     const geo = new THREE.SphereGeometry(1, 24, 16);
+    const cuffGeo = new THREE.CylinderGeometry(0.046, 0.052, 0.07, 16);
+    const cuffMat = new THREE.MeshToonMaterial({ color: 0xd8d8d8, gradientMap: toonGradient() });
+    const line = outlineMaterial(0.0035);
     for (let i = 0; i < 2; i++) {
       const g = new THREE.Mesh(geo, this.mat);
       g.scale.set(0.07, 0.075, 0.09);
       g.position.copy(this.target[i]);
-      const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.065, 0.1, 16), new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.6 }));
+      g.add(new THREE.Mesh(geo, line));
+      const cuff = new THREE.Mesh(cuffGeo, cuffMat);
       cuff.rotation.x = Math.PI / 2;
       cuff.position.z = 0.9;
       cuff.scale.set(1 / 0.07, 1 / 0.09, 1 / 0.075);
+      cuff.add(new THREE.Mesh(cuffGeo, line));
       g.add(cuff);
       this.gloves.push(g);
       this.object.add(g);
@@ -82,43 +88,4 @@ export class FirstPersonGloves {
   }
 }
 
-/** Short-lived additive particle bursts for landed punches. */
-export class Sparks {
-  readonly object = new THREE.Group();
-  private bursts: { pts: THREE.Points; vel: Float32Array; life: number }[] = [];
-
-  spawn(at: THREE.Vector3, color = 0xffd27a, count = 40): void {
-    const pos = new Float32Array(count * 3);
-    const vel = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      pos.set([at.x, at.y, at.z], i * 3);
-      const v = new THREE.Vector3().randomDirection().multiplyScalar(1.5 + Math.random() * 3);
-      vel.set([v.x, v.y, v.z], i * 3);
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    const mat = new THREE.PointsMaterial({ color, size: 0.045, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
-    const pts = new THREE.Points(geo, mat);
-    this.object.add(pts);
-    this.bursts.push({ pts, vel, life: 0.45 });
-  }
-
-  update(dt: number): void {
-    for (const b of this.bursts) {
-      b.life -= dt;
-      const pos = b.pts.geometry.getAttribute('position') as THREE.BufferAttribute;
-      for (let i = 0; i < pos.count; i++) {
-        b.vel[i * 3 + 1] -= 6 * dt;
-        pos.setXYZ(i, pos.getX(i) + b.vel[i * 3] * dt, pos.getY(i) + b.vel[i * 3 + 1] * dt, pos.getZ(i) + b.vel[i * 3 + 2] * dt);
-      }
-      pos.needsUpdate = true;
-      (b.pts.material as THREE.PointsMaterial).opacity = Math.max(0, b.life / 0.45);
-    }
-    for (const b of this.bursts.filter((x) => x.life <= 0)) {
-      this.object.remove(b.pts);
-      b.pts.geometry.dispose();
-      (b.pts.material as THREE.Material).dispose();
-    }
-    this.bursts = this.bursts.filter((x) => x.life > 0);
-  }
-}
+export { Sparks, type SparkKind, type SparkOptions } from './sparks.ts';

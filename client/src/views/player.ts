@@ -229,7 +229,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
         if (ev.attacker === mySlot) {
           if (ev.outcome === 'hit' || ev.outcome === 'block') {
             opp.playReaction({ kind: ev.outcome, zone: ev.zone, heavy: ev.damage >= 9 });
-            sparks.spawn(opp.zonePosition(ev.zone, tmp), ev.outcome === 'hit' ? 0xffd27a : 0x9fc6ff, ev.outcome === 'hit' ? 45 : 15);
+            sparks.spawn(opp.zonePosition(ev.zone, tmp), ev.outcome === 'hit' ? 0xffd27a : 0x9fc6ff, ev.outcome === 'hit' ? 45 : 15, { kind: ev.outcome === 'block' ? 'block' : ev.damage >= 9 ? 'heavy' : 'hit' });
             if (ev.outcome === 'hit') hitStopUntil = performance.now() + 60;
           }
           if (ev.stagger) opp.playReaction({ kind: 'stagger' });

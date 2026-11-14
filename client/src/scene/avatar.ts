@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { W, type DefenseState, type Hand, type Punch, type WirePose, type Zone } from '../../../shared/types.ts';
 import { SW_METRES } from '../tracking/input.ts';
+import { outlineMaterial, toonGradient } from './fx.ts';
 
 export type Corner = 'red' | 'blue';
 
@@ -113,11 +114,11 @@ export class ProceduralAvatar implements Avatar {
   private target = restPose();
   private cur = restPose();
   private limp = limpPose();
-  private skin = new THREE.MeshStandardMaterial({ color: 0xb98a6a, roughness: 0.65 });
-  private cornerMat = new THREE.MeshStandardMaterial({ color: CORNER_COLORS.red, roughness: 0.45 });
-  private gloveMats: Record<Hand, THREE.MeshStandardMaterial> = {
-    left: new THREE.MeshStandardMaterial({ color: CORNER_COLORS.red, roughness: 0.3, emissive: 0x000000 }),
-    right: new THREE.MeshStandardMaterial({ color: CORNER_COLORS.red, roughness: 0.3, emissive: 0x000000 }),
+  private skin = new THREE.MeshToonMaterial({ color: 0xbb8160, gradientMap: toonGradient() });
+  private cornerMat = new THREE.MeshToonMaterial({ color: CORNER_COLORS.red, gradientMap: toonGradient() });
+  private gloveMats: Record<Hand, THREE.MeshToonMaterial> = {
+    left: new THREE.MeshToonMaterial({ color: CORNER_COLORS.red, gradientMap: toonGradient(), emissive: 0x000000 }),
+    right: new THREE.MeshToonMaterial({ color: CORNER_COLORS.red, gradientMap: toonGradient(), emissive: 0x000000 }),
   };
   private parts: Record<string, THREE.Mesh> = {};
   private hitOff = new THREE.Vector3();
@@ -137,11 +138,14 @@ export class ProceduralAvatar implements Avatar {
     this.object.add(this.body);
     const cyl = new THREE.CylinderGeometry(1, 1, 1, 14);
     const sph = new THREE.SphereGeometry(1, 20, 14);
-    const dark = new THREE.MeshStandardMaterial({ color: 0x15151a, roughness: 0.8 });
+    const dark = new THREE.MeshToonMaterial({ color: 0x1c1c24, gradientMap: toonGradient() });
+    // Inverted-hull ink outline so the fighters read like fighting-game characters.
+    const line = outlineMaterial(0.009);
     const add = (name: string, geo: THREE.BufferGeometry, mat: THREE.Material, r: [number, number, number]) => {
       const m = new THREE.Mesh(geo, mat);
       m.castShadow = true;
       m.userData.r = r;
+      m.add(new THREE.Mesh(geo, line));
       this.parts[name] = m;
       this.body.add(m);
     };
@@ -150,6 +154,26 @@ export class ProceduralAvatar implements Avatar {
     add('trunks', sph, this.cornerMat, [0.19, 0.17, 0.14]);
     add('neck', cyl, this.skin, [0.055, 1, 0.055]);
     add('head', sph, this.skin, [0.105, 0.125, 0.11]);
+    // Corner-coloured headband with trailing tails, in head-local (unit sphere) space.
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.93, 0.13, 8, 28), this.cornerMat);
+    band.rotation.x = Math.PI / 2;
+    band.position.y = 0.36;
+    band.add(new THREE.Mesh(band.geometry, line));
+    this.parts.head.add(band);
+    const knot = new THREE.Mesh(sph, this.cornerMat);
+    knot.scale.setScalar(0.17);
+    knot.position.set(0, 0.36, -0.95);
+    knot.add(new THREE.Mesh(sph, line));
+    this.parts.head.add(knot);
+    const tailGeo = new THREE.BoxGeometry(0.15, 0.8, 0.05);
+    tailGeo.translate(0, -0.4, 0);
+    for (const sx of [-1, 1]) {
+      const tail = new THREE.Mesh(tailGeo, this.cornerMat);
+      tail.position.set(sx * 0.06, 0.34, -1.0);
+      tail.rotation.set(-0.6, 0, sx * 0.22);
+      tail.add(new THREE.Mesh(tail.geometry, line));
+      this.parts.head.add(tail);
+    }
     for (const s of ['l', 'r']) {
       add(`${s}Shoulder`, sph, this.skin, [0.075, 0.075, 0.075]);
       add(`${s}Upper`, cyl, this.skin, [0.05, 1, 0.05]);

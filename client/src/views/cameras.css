@@ -1,22 +1,37 @@
 .campicker {
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 11;
-  display: flex; gap: 4px; padding: 5px; border-radius: 999px;
-  background: rgba(10, 11, 16, 0.86); border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 14px 40px -16px rgba(0, 0, 0, 0.9);
+  display: flex; gap: 6px; padding: 6px 14px;
+  background: rgba(10, 8, 15, 0.92); clip-path: polygon(12px 0, 100% 0, calc(100% - 12px) 100%, 0 100%);
+  box-shadow: inset 0 3px 0 var(--yellow, #ffd400), inset 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 .campicker:empty { display: none; }
 .campicker button {
-  display: flex; align-items: center; gap: 7px; border: 0; border-radius: 999px; padding: 7px 13px 7px 8px;
-  background: transparent; color: #c9c7cf; font: 600 13px var(--body, sans-serif); cursor: pointer; white-space: nowrap;
-  transition: background 160ms cubic-bezier(0.16, 1, 0.3, 1), color 160ms;
+  position: relative; isolation: isolate; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 0; padding: 8px 14px 7px 10px;
+  background: transparent; color: #dcd9e2; font: italic 400 12px/1 var(--ui, sans-serif); letter-spacing: 0.06em; text-transform: uppercase;
+  cursor: pointer; white-space: nowrap; transition: color 140ms;
 }
-.campicker button:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
-.campicker button.on { background: #e9c46a; color: #141414; }
-.campicker button kbd { min-width: 1.5em; padding: 0 5px; font-size: 11px; background: rgba(255, 255, 255, 0.1); border-color: transparent; color: inherit; }
-.campicker button.on kbd { background: rgba(0, 0, 0, 0.15); }
-body.spectating .caption { bottom: calc(7vh + 48px); }
+.campicker button::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; transform: skewX(-14deg); transition: background 140ms, box-shadow 140ms;
+}
+.campicker button:hover { color: var(--yellow, #ffd400); }
+.campicker button:hover::before { background: rgba(255, 255, 255, 0.07); box-shadow: inset 0 0 0 2px rgba(255, 212, 0, 0.6); }
+.campicker button:focus-visible { outline: none; color: var(--yellow, #ffd400); }
+.campicker button:focus-visible::before { box-shadow: inset 0 0 0 2px var(--yellow, #ffd400); }
+.campicker button.on { color: #1b0700; }
+.campicker button.on::before { background: linear-gradient(180deg, #fff27a, #ffd400 50%, #ff8a00); box-shadow: 3px 3px 0 #7a0710; }
+.campicker button kbd {
+  min-width: 1.7em; padding: 3px 4px 2px; font: 400 9px/1.2 var(--pixel, monospace); border: 0; border-radius: 0;
+  background: rgba(0, 0, 0, 0.5); color: inherit;
+}
+.campicker button.on kbd { background: rgba(0, 0, 0, 0.18); color: #1b0700; }
+body.spectating .caption { bottom: calc(7vh + 52px); }
+@media (min-width: 1600px) {
+  .campicker button { font-size: 14px; padding: 10px 18px 9px 12px; }
+  .campicker button kbd { font-size: 11px; }
+}
 @media (max-width: 800px) {
-  .campicker { left: 8px; right: 8px; transform: none; overflow-x: auto; justify-content: flex-start; border-radius: 12px; }
+  .campicker { left: 8px; right: 8px; transform: none; overflow-x: auto; justify-content: flex-start; clip-path: none; }
   .campicker button kbd { display: none; }
+  body.spectating .caption { bottom: calc(12vh + 60px); }
 }
 body.spectating .zones { display: none; }

@@ -72,7 +72,7 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
         const def = avatars[other(ev.attacker)];
         def.playReaction({ kind: ev.outcome, zone: ev.zone, heavy: ev.damage >= 9 });
         if (ev.stagger) def.playReaction({ kind: 'stagger' });
-        sparks.spawn(def.zonePosition(ev.zone, tmp), ev.outcome === 'hit' ? 0xffd27a : 0x9fc6ff, ev.outcome === 'hit' ? 40 : 14);
+        sparks.spawn(def.zonePosition(ev.zone, tmp), ev.outcome === 'hit' ? 0xffd27a : 0x9fc6ff, ev.outcome === 'hit' ? 40 : 14, { kind: ev.outcome === 'block' ? 'block' : ev.damage >= 9 ? 'heavy' : 'hit' });
         if (ev.outcome === 'hit') hitStopUntil = hitStopUntil.map((v, i) => (i === other(ev.attacker) ? performance.now() + 60 : v));
       }
       if (ev.e === 'throw') {

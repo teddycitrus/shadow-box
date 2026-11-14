@@ -28,7 +28,7 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
       hud.show(ev.round === 3 ? 'Final round' : `Round ${ev.round}`, 1500, 'round');
       setTimeout(() => {
         if (hud.paused) return;
-        hud.show('Fight', 700, 'fight');
+        hud.show('Fight!', 700, 'fight');
         sound.announce('fight');
       }, 1500);
       break;
@@ -37,7 +37,7 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
       sound.sfx('cheer', { delay: 0.2 });
       excite(0.5);
       say('time');
-      hud.show('Time', 1500);
+      hud.show('Time', 1500, 'time');
       break;
     case 'throw':
       sound.sfx('swoosh', { gain: THROW_GAIN[punchKind(ev.punch.type)] });
@@ -76,7 +76,7 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
       sound.sfx('roar', { delay: 0.15 });
       excite(1);
       say(ev.slot === 0 ? 'down_red' : 'down_blue');
-      hud.show('Down', 1200, 'down');
+      hud.show('Down!', 1200, 'down');
       break;
     case 'count':
       if (ev.n > 1) {
@@ -107,7 +107,7 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
       if (r.winner !== null) sound.sfx('fanfare', { delay: r.kind === 'ko' || r.kind === 'tko' ? 1.6 : 0.8 });
       say(r.kind === 'draw' ? 'draw' : r.kind);
       if (r.winner !== null) setTimeout(() => say(r.winner === 0 ? 'red_wins' : 'blue_wins'), 300);
-      hud.show(resultText(r, names), 0, 'result');
+      hud.show(resultText(r, names), 0, `result ${r.kind}`);
       break;
     }
     case 'paused':

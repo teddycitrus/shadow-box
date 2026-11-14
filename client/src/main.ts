@@ -111,14 +111,17 @@ function howTo(): HTMLElement {
 function title(): void {
   document.body.classList.add('title-screen');
   startSpectator(app, new DemoLink(), { demo: true });
-  const code = h('input', { placeholder: 'CODE', maxlength: '4', class: 'codein', autocomplete: 'off', spellcheck: 'false' });
+  const code = h('input', { placeholder: 'CODE', maxlength: '4', class: 'codein', 'aria-label': 'Match code', autocomplete: 'off', spellcheck: 'false' });
   const join = () => {
     const c = code.value.trim().toUpperCase();
     if (/^[A-Z]{4}$/.test(c)) go(`/play/${c}`);
   };
   code.addEventListener('keydown', (e) => e.key === 'Enter' && join());
-  app.append(h('div', { class: 'scrim' }, h('i', { class: 'slash red' }), h('i', { class: 'slash blue' })), h('div', { class: 'title' },
-    h('h1', {}, h('span', { class: 't1' }, 'Keyboard'), h('span', { class: 't2' }, 'Warrior')),
+  app.append(h('div', { class: 'scrim' }, h('i', { class: 'slash red' }), h('i', { class: 'slash blue' }), h('i', { class: 'speed' })), h('div', { class: 'title' },
+    h('h1', { 'aria-label': 'Keyboard Warrior' },
+      h('span', { class: 't1', 'data-text': 'Keyboard', 'aria-hidden': 'true' }, 'Keyboard'),
+      h('span', { class: 't2', 'data-text': 'Warrior', 'aria-hidden': 'true' }, 'Warrior'),
+    ),
     h('div', { class: 'menu' },
       button('Create match', () => go('/create'), 'primary'),
       h('div', { class: 'joinrow' }, code, button('Join', join)),
