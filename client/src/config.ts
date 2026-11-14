@@ -72,8 +72,12 @@ export const CONFIG = {
     neutralDriftMs: 3_000,
   },
 
-  /** A motion only counts as a punch if the arm opens up by this many degrees. */
-  gate: { minElbowOpen: 15 },
+  /**
+   * A motion only counts as a punch if the arm opens up by minElbowOpen degrees. MediaPipe's 3D
+   * elbow lags fast punches, so a fast motion that fails gets elbowLagMs to catch up.
+   * "From guard" uses the calibrated guard plus this slack (it is a model feature, not a gate).
+   */
+  gate: { minElbowOpen: 15, elbowLagMs: 150, lateMaxPeakY: 0.9, guardStartSlack: 0.4, guardStartSlackY: 0.5, defaultGuardHead: 0.6, defaultGuardY: -0.2 },
 
   /** Per-player learned classifier, trained by the guided calibration. */
   model: {

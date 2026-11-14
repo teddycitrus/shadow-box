@@ -55,6 +55,8 @@ export interface Segment {
   maxUp: number;
   reach: number;
   startReach: number;
+  /** Whether the hand started from (near) the player's calibrated guard position. */
+  fromGuard: boolean;
 }
 
 interface Active {
@@ -66,12 +68,16 @@ interface Active {
   maxUp: number;
   travel: number;
   maxDist: number;
+  /** Highest elbow angle seen shortly after the peak (MediaPipe's elbow lags fast punches). */
+  lateElbow: number;
+  settleUntil: number;
   peakScore: number;
   peak: { t: number; f: HandFeatures; img: Lm; z: number; travel: number } | null;
 }
 
 interface HandState {
   mode: 'ready' | 'active' | 'locked';
+  pending: { a: Active; chinY: number; sw: number } | null;
   active: Active | null;
   lastFire: number;
   lastMotion: number;
@@ -207,6 +213,8 @@ export class Classifier {
   }
 
   private stepHand(hand: Hand, st: HandState, f: HandFeatures, img: Lm, z: number, t: number, chinY: number, sw: number): (Punch & { at: number }) | null {
+    const late = this.checkPending(hand, st, f, t);
+    if (late) return late;
     const c = CONFIG.punch;
     const cooldown = this.gassed ? c.gassedCooldownMs : c.cooldownMs;
     if (st.mode === 'locked') {
@@ -224,7 +232,7 @@ export class Classifier {
       if (f.speed < c.startSpeed) return null;
       st.mode = 'active';
       const s0 = before && t - before.t < 200 ? before : st.rest;
-      st.active = { startT: s0.t, start: s0.f, startImg: s0.img, startZ: s0.z, maxSpeed: f.speed, maxUp: f.vUp, travel: 0, maxDist: 0, peakScore: -Infinity, peak: null };
+      st.active = { startT: s0.t, start: s0.f, startImg: s0.img, startZ: s0.z, maxSpeed: f.speed, maxUp: f.vUp, travel: 0, maxDist: 0, peakScore: -Infinity, peak: null, lateElbow: 0, settleUntil: 0 };
     }
     const a = st.active!;
     st.lastMotion = t;
@@ -243,6 +251,42 @@ export class Classifier {
     const tooLong = t - a.startT > c.maxDurationMs;
     if (!stopped && !tooLong) return null;
 
+    const g = CONFIG.gate;
+    const lateCandidate = a.peak && this.nearGuard(a.start) && a.peak.f.y < g.lateMaxPeakY;
+    if (lateCandidate && a.travel >= c.minTravel && a.peak!.f.elbow - a.start.elbow < g.minElbowOpen && g.elbowLagMs > 0) {
+      a.settleUntil = t + g.elbowLagMs;
+      a.lateElbow = a.peak!.f.elbow;
+      st.pending = { a, chinY, sw };
+    }
+    return this.finish(hand, st, a, chinY, sw, t);
+  }
+
+  /**
+   * MediaPipe's elbow lags fast punches: a motion that only failed the elbow check stays pending
+   * for a short window and fires (with its original peak time) if the elbow catches up.
+   */
+  private checkPending(hand: Hand, st: HandState, f: HandFeatures, t: number): (Punch & { at: number }) | null {
+    const p = st.pending;
+    if (!p) return null;
+    p.a.lateElbow = Math.max(p.a.lateElbow, f.elbow);
+    if (t > p.a.settleUntil) st.pending = null;
+    else if (p.a.lateElbow - p.a.start.elbow >= CONFIG.gate.minElbowOpen) {
+      st.pending = null;
+      if (st.mode === 'locked') return null;
+      const punch = this.classify(hand, p.a, p.chinY, p.sw, t);
+      if (this.lastSeg) this.onDecision?.(this.lastSeg, punch, `${this.lastDecision ?? ''} (late elbow)${punch && !this.canPunch ? ' (blocked: cannot punch now)' : ''}`);
+      if (!punch || !this.canPunch) return null;
+      st.active = null;
+      st.rest = null;
+      st.mode = 'locked';
+      st.lastFire = t;
+      return { ...punch, at: p.a.peak!.t };
+    }
+    return null;
+  }
+
+  /** Decides a completed segment and fires or releases the hand. */
+  private finish(hand: Hand, st: HandState, a: Active, chinY: number, sw: number, t: number): (Punch & { at: number }) | null {
     st.active = null;
     st.rest = null;
     const punch = this.classify(hand, a, chinY, sw, t);
@@ -254,6 +298,14 @@ export class Classifier {
     st.mode = 'locked';
     st.lastFire = t;
     return { ...punch, at: a.peak!.t };
+  }
+
+  /** Hand position counts as "at guard" (personalized when the calibration measured the guard). */
+  nearGuard(f: HandFeatures): boolean {
+    const g = CONFIG.gate;
+    const head = (this.cal.guardHead ?? g.defaultGuardHead) + g.guardStartSlack;
+    const y = (this.cal.guardY ?? g.defaultGuardY) + g.guardStartSlackY;
+    return f.headDist <= head && f.y <= y;
   }
 
   /** Peak detection metric: how far out the hand is, counting depth and on-screen growth. */
@@ -275,9 +327,10 @@ export class Classifier {
     const info = `${hand} elbow=${pf.elbow.toFixed(0)} fwd=${fmt(forward)} in=${fmt(dIn)} rise=${fmt(rise)} y=${fmt(pf.y)} travel=${fmt(p.travel)}`;
     const seg: Segment = {
       hand, startT: a.startT, peakT: p.t, endT, dIn, rise, fwd, forward,
-      elbow: pf.elbow, startElbow: a.start.elbow, startY: a.start.y, peakY: pf.y, chinY,
+      elbow: Math.max(pf.elbow, a.lateElbow), startElbow: a.start.elbow, startY: a.start.y, peakY: pf.y, chinY,
       startHead: a.start.headDist, peakHead: pf.headDist, scaleGain: pf.scale - a.start.scale,
       travel: p.travel, maxSpeed: a.maxSpeed, maxUp: a.maxUp, reach: pf.reach, startReach: a.start.reach,
+      fromGuard: this.nearGuard(a.start),
     };
     this.lastSeg = seg;
     this.onSegment?.(seg);
@@ -299,7 +352,7 @@ export class Classifier {
   }
 }
 
-/** Camera-independent punch gate: enough travel and the arm opens up. */
+/** Camera-independent punch gate: enough travel and the arm opens up (retractions close it). */
 export function passesGate(seg: Segment): boolean {
   return seg.travel >= CONFIG.punch.minTravel && seg.elbow - seg.startElbow >= CONFIG.gate.minElbowOpen;
 }
@@ -325,7 +378,7 @@ export function ruleDecision(seg: Segment, stance: Stance): Punch | null {
 }
 
 function newHand(): HandState {
-  return { mode: 'ready', active: null, lastFire: -Infinity, lastMotion: -Infinity, lastIgnored: -Infinity, rest: null, prev: null };
+  return { mode: 'ready', pending: null, active: null, lastFire: -Infinity, lastMotion: -Infinity, lastIgnored: -Infinity, rest: null, prev: null };
 }
 
 function clone(f: PoseFrame): PoseFrame {
