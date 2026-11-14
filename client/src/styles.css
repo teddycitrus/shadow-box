@@ -164,3 +164,19 @@ body.tuning .debug { left: auto; right: 3vw; top: auto; bottom: 2vh; width: min(
   .webcam { left: 50%; top: 6vh; transform: translateX(-50%); width: 88vw; }
   .lobby { top: auto; bottom: 2vh; transform: none; right: 4vw; }
 }
+
+/* Guided punch teaching */
+.teach {
+  position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: flex-end;
+  padding: 18px; background: linear-gradient(transparent 45%, rgba(0, 0, 0, 0.75)); z-index: 2; text-align: center;
+}
+.teach.on { display: flex; }
+.teach-step { font-size: 12px; color: var(--dim); }
+.teach-move { font: clamp(40px, 6vw, 72px)/1 var(--display); text-transform: uppercase; }
+.teach-how { font-size: 14px; margin-top: 4px; }
+.teach-dots { display: flex; gap: 8px; margin: 10px 0; min-height: 14px; }
+.teach-dots i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--ink); }
+.teach-dots i.on { background: #57cc99; border-color: #57cc99; }
+.teach-time { width: 60%; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.teach-time i { display: block; height: 100%; background: var(--stam); }
+.learned { font-size: 13px; color: var(--dim); margin-top: 8px; }

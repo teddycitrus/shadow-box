@@ -1,6 +1,7 @@
 import { NO_DEFENSE, WIRE_LANDMARKS, type DefenseState, type Hand, type Punch, type PunchType, type Stance, type WirePose } from '../../../shared/types.ts';
 import { Calibrator, looksLikeGuard, type Calibration, type CalibrationStatus } from './calibration.ts';
 import { Classifier, type ClassifierOutput } from './classifier.ts';
+import { Teacher, modelFrom, type Profile, type TeachStatus } from './teach.ts';
 import type { Lm, PoseFrame } from './frame.ts';
 import { PoseTracker } from './pose.ts';
 import { PUNCH_TIMING, punchDuration, synthPose, type SynthPunch } from './synthetic.ts';
@@ -24,10 +25,20 @@ export interface InputSource {
   readonly calibration: Calibration | null;
   readonly video: HTMLVideoElement | null;
   readonly stats: string;
+  /** Guided punch teaching in progress, or null. */
+  readonly teach: TeachStatus | null;
+  /** Moves learned for this player, empty when using the default rules. */
+  readonly learned: string[];
   onTick: (t: InputTick) => void;
   start(): Promise<void>;
   recalibrate(): void;
+  /** Start (or restart) the guided punch teaching. */
+  reteach(): void;
+  /** Skip teaching and use the hand-written rules. */
+  skipTeach(): void;
 }
+
+const PROFILE_KEY = 'shadowbox:profile';
 
 export const SW_METRES = 0.38;
 
@@ -50,9 +61,12 @@ export class CameraInput implements InputSource {
   private tracker = new PoseTracker();
   private calibrator = new Calibrator();
   private classifier: Classifier | null = null;
+  private teacher: Teacher | null = null;
+  teach: TeachStatus | null = null;
+  learned: string[] = [];
 
   get calibrated(): boolean {
-    return this.classifier !== null;
+    return this.classifier !== null && this.teacher === null;
   }
 
   get video(): HTMLVideoElement {
@@ -72,6 +86,36 @@ export class CameraInput implements InputSource {
     this.calibrator.reset();
     this.classifier = null;
     this.calibration = null;
+    this.teacher = null;
+    this.teach = null;
+  }
+
+  reteach(): void {
+    if (!this.classifier) return;
+    this.teacher = new Teacher(this.stance);
+    const c = this.classifier;
+    c.model = () => null;
+    c.onSegment = (seg) => this.teacher?.segment(seg);
+  }
+
+  skipTeach(): void {
+    localStorage.removeItem(PROFILE_KEY);
+    this.teacher = null;
+    this.teach = null;
+    this.learned = [];
+    if (this.classifier) {
+      this.classifier.model = undefined;
+      this.classifier.onSegment = undefined;
+    }
+  }
+
+  private apply(p: Profile): void {
+    const c = this.classifier!;
+    const m = modelFrom(p);
+    c.model = m ? (seg) => m.decide(seg) : undefined;
+    c.onSegment = undefined;
+    c.defenseThresholds = { ...p.defense };
+    this.learned = p.learned;
   }
 
   private handle(f: PoseFrame | null): void {
@@ -81,6 +125,9 @@ export class CameraInput implements InputSource {
       if (this.status.stage === 'done') {
         this.calibration = this.status.cal;
         this.classifier = new Classifier(this.status.cal);
+        const saved = localStorage.getItem(PROFILE_KEY);
+        if (saved) this.apply(JSON.parse(saved) as Profile);
+        else this.reteach();
       }
       if (f) this.onTick({ pose: toWire(f.world, [0, 0]), defense: { ...NO_DEFENSE, guard: looksLikeGuard(f) }, punches: [] });
       return;
@@ -93,9 +140,21 @@ export class CameraInput implements InputSource {
     c.stance = this.stance;
     c.gassed = this.gassed;
     c.canPunch = this.canPunch;
+    if (this.teacher) c.canPunch = true;
     const out = c.update(f);
     this.debug = out;
     const feat = out.features!;
+    if (this.teacher) {
+      this.teach = this.teacher.update(f.t, feat);
+      if (this.teach.done) {
+        const p = this.teacher.profile();
+        localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
+        this.teacher = null;
+        this.apply(p);
+      }
+      this.onTick({ pose: toWire(f.world, [feat.headDx, feat.headDy]), defense: out.defense, punches: [] });
+      return;
+    }
     this.onTick({ pose: toWire(f.world, [feat.headDx, feat.headDy]), defense: out.defense, punches: out.punches });
   }
 }
@@ -122,6 +181,10 @@ export class KeyInput implements InputSource {
   readonly calibration = null;
   readonly video = null;
   readonly stats = 'keyboard';
+  readonly teach = null;
+  readonly learned = [];
+  reteach(): void {}
+  skipTeach(): void {}
   onTick: (t: InputTick) => void = () => {};
   private held = new Set<string>();
   private punches: Record<Hand, SynthPunch | null> = { left: null, right: null };

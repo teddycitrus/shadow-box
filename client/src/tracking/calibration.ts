@@ -12,6 +12,9 @@ export interface Calibration {
   noseY: number;
   /** Wrist-to-index distance over shoulder width, per hand, at guard. */
   handSize: { left: number; right: number };
+  /** Wrist height relative to the shoulder line and wrist-to-nose distance at guard, in sw (worst hand). */
+  guardY?: number;
+  guardHead?: number;
 }
 
 const REQUIRED = [L.nose, L.lShoulder, L.rShoulder, L.lElbow, L.rElbow, L.lWrist, L.rWrist];
@@ -99,5 +102,14 @@ export function measure(frames: PoseFrame[]): Calibration {
     noseX: avg((f) => f.img[L.nose].x),
     noseY: avg((f) => f.img[L.nose].y),
     handSize: { left: avg((f) => hand(f, 'left')), right: avg((f) => hand(f, 'right')) },
+    guardY: avg((f) => {
+      const sw = dist2(f.img[L.lShoulder], f.img[L.rShoulder]);
+      const shY = mid(f.img[L.lShoulder], f.img[L.rShoulder]).y;
+      return Math.max(f.img[L.lWrist].y - shY, f.img[L.rWrist].y - shY) / sw;
+    }),
+    guardHead: avg((f) => {
+      const sw = dist2(f.img[L.lShoulder], f.img[L.rShoulder]);
+      return Math.max(dist2(f.img[L.lWrist], f.img[L.nose]), dist2(f.img[L.rWrist], f.img[L.nose])) / sw;
+    }),
   };
 }

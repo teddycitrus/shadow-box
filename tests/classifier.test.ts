@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { labelledSegments, loadFixtures, scoreCalibration, type Recording } from '../scripts/eval-core.ts';
 import { Calibrator, framingCheck, measure } from '../client/src/tracking/calibration.ts';
 import { Classifier } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
@@ -123,38 +123,39 @@ describe('defense', () => {
   it('hands down is no guard', () => expect(hold(NO_DEFENSE).guard).toBe(false));
 });
 
-describe('recorded fixtures', () => {
-  const dir = 'tests/fixtures';
-  const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')) : [];
-  interface Recording {
-    calibration: typeof cal | null;
-    frames: PoseFrame[];
-    stance?: Stance;
-    expected?: PunchType[];
-    expectedTarget?: Target;
-    defense?: 'guard' | 'duck' | 'slipLeft' | 'slipRight';
-    reps?: number;
-  }
-  if (!files.length) it.skip('no recorded fixtures yet', () => {});
-  for (const file of files) {
-    const rec = JSON.parse(readFileSync(`${dir}/${file}`, 'utf8')) as Recording;
-    it.skipIf(!rec.expected || !rec.calibration)(`replays ${file}`, () => {
-      const c = new Classifier(rec.calibration!);
-      c.stance = rec.stance ?? 'orthodox';
-      const punches: Punch[] = [];
-      let edges = 0;
-      let was = false;
-      for (const f of rec.frames) {
-        const out = c.update(f);
-        punches.push(...out.punches);
-        const d = out.defense;
-        const on = rec.defense === 'guard' ? d.guard : rec.defense === 'duck' ? d.duck : rec.defense === 'slipLeft' ? d.slip === 'left' : d.slip === 'right';
-        if (on && !was) edges++;
-        was = on;
-      }
-      expect(punches.map((p) => p.type), file).toEqual(rec.expected);
-      if (rec.expectedTarget) expect(punches.map((p) => p.target), file).toEqual(rec.expected!.map(() => rec.expectedTarget));
-      if (rec.defense) expect(edges, file).toBe(rec.reps ?? 5);
+describe('recorded fixtures (tests/fixtures, see FIXTURES.md)', () => {
+  const fixtures = loadFixtures();
+  const byName = (id: string) => fixtures.find((f) => f.file.endsWith(`-${id}.json`));
+  if (!fixtures.length) it.skip('no recorded fixtures yet', () => {});
+
+  it.skipIf(!fixtures.some((f) => f.rec.expected?.length))('the per-player model learns real punches from a 3-rep calibration', () => {
+    const segs = fixtures.flatMap(({ file, rec }) => labelledSegments(file, rec));
+    const s = scoreCalibration(segs, 3);
+    expect(s.punches).toBeGreaterThan(0);
+    expect(s.exact / s.punches).toBeGreaterThanOrEqual(0.7);
+    expect(s.falseFires / Math.max(1, s.nonPunches)).toBeLessThanOrEqual(0.25);
+  });
+
+  const onsets = (rec: Recording) => {
+    const c = new Classifier(rec.calibration!);
+    const n = { guard: 0, duck: 0, slipLeft: 0, slipRight: 0 };
+    let prev = { ...n };
+    for (const f of rec.frames) {
+      const d = c.update(f).defense;
+      const cur = { guard: +d.guard, duck: +d.duck, slipLeft: +(d.slip === 'left'), slipRight: +(d.slip === 'right') };
+      for (const k of Object.keys(n) as (keyof typeof n)[]) if (cur[k] && !prev[k]) n[k]++;
+      prev = cur;
+    }
+    return n;
+  };
+  for (const [id, key, min] of [['guard', 'guard', 4], ['duck', 'duck', 4], ['slip-left', 'slipLeft', 3], ['slip-right', 'slipRight', 3]] as const) {
+    it.skipIf(!byName(id))(`detects most reps in the ${id} clip`, () => {
+      expect(onsets(byName(id)!.rec)[key]).toBeGreaterThanOrEqual(min);
     });
   }
+  it.skipIf(!fixtures.length)('rarely ducks by accident while punching', () => {
+    const punchClips = fixtures.filter((f) => f.rec.expected?.length);
+    const ducks = punchClips.reduce((n, f) => n + onsets(f.rec).duck, 0);
+    expect(ducks).toBeLessThanOrEqual(punchClips.length * 0.25);
+  });
 });

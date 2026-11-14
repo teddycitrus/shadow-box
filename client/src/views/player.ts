@@ -74,6 +74,15 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
     ready = false;
     sendReady();
   });
+  const reteach = button('Teach my punches', () => {
+    input.reteach();
+    ready = false;
+    sendReady();
+  });
+  const skipTeach = button('Skip, use defaults', () => input.skipTeach(), 'ghost');
+  const learnedNote = h('div', { class: 'learned' });
+  const teachBox = h('div', { class: 'teach' });
+  webcam.root.append(teachBox);
   const players = h('div', { class: 'players' });
   const share = h('div', { class: 'share' });
   if (opts.code) {
@@ -88,9 +97,10 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
   const lobby = h('div', { class: 'panel lobby' },
     h('h2', {}, opts.practice ? 'Practice' : 'Fight lobby'),
     share,
-    h('div', { class: 'calib' }, status, progress),
+    h('div', { class: 'calib' }, status, progress, learnedNote),
     players,
     h('div', { class: 'row' }, stanceBtn, input.kind === 'camera' ? recal : null, readyBtn),
+    input.kind === 'camera' ? h('div', { class: 'row' }, reteach, skipTeach) : null,
     h('p', { class: 'hint' }, input.kind === 'keys'
       ? 'Keyboard mode. Press Ready to start.'
       : 'Laptop at chest height, 1.5 to 2 m away, light in front of you. Hold your guard for 2 seconds to calibrate.'),
@@ -256,13 +266,30 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       const s = input.status;
       const good = input.calibrated;
       webcam.draw(input.frame, input.video, good);
-      if (!good && s) {
+      const ts = input.teach;
+      const teaching = !!ts && !ts.done && !good;
+      if (teaching && ts.step) {
+        status.textContent = `Teaching ${ts.index + 1} of ${ts.total}`;
+        (progress.firstChild as HTMLElement).style.width = `${(ts.index / ts.total) * 100}%`;
+        const dots = ts.repsNeeded ? Array.from({ length: ts.repsNeeded }, (_, i) => h('i', { class: i < ts.reps ? 'on' : '' })) : [];
+        teachBox.replaceChildren(
+          h('div', { class: 'teach-step' }, `${ts.index + 1} / ${ts.total}`),
+          h('div', { class: 'teach-move' }, ts.step.prompt),
+          h('div', { class: 'teach-how' }, ts.step.kind === 'punch' ? `Throw it ${ts.repsNeeded} times, back to guard after each` : 'Do it once or twice, then come back'),
+          h('div', { class: 'teach-dots' }, ...dots),
+          h('div', { class: 'teach-time' }, h('i', { style: `width:${(1 - ts.progress) * 100}%` })),
+        );
+      } else if (!good && s) {
         status.textContent = s.stage === 'framing' ? s.message : s.stage === 'hold' ? s.message : 'Calibrated';
         (progress.firstChild as HTMLElement).style.width = `${s.stage === 'hold' ? s.progress * 100 : 0}%`;
       } else if (good) {
         status.textContent = 'Calibrated. Throw a few punches to check tracking.';
         (progress.firstChild as HTMLElement).style.width = '100%';
       }
+      teachBox.classList.toggle('on', teaching);
+      learnedNote.textContent = good ? (input.learned.length ? `Using your own model: ${input.learned.length} punches learned` : 'Using the default rules') : '';
+      reteach.toggleAttribute('disabled', !good);
+      skipTeach.hidden = !teaching;
       if (good !== wasCalibrated) {
         wasCalibrated = good;
         if (!good) ready = false;
