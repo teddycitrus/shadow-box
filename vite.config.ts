@@ -1,5 +1,5 @@
 /// <reference types="vitest/config" />
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { defineConfig, type Plugin } from 'vite';
 
 /** Dev only: lets the ?record=1 tuner save labelled clips straight into tests/fixtures/. */
@@ -7,6 +7,11 @@ const fixtureWriter: Plugin = {
   name: 'fixture-writer',
   apply: 'serve',
   configureServer(server) {
+    server.middlewares.use('/audio-manifest', (_req, res) => {
+      const dir = 'client/public/audio';
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.mp3')) : []));
+    });
     server.middlewares.use('/__fixtures/', (req, res) => {
       const name = decodeURIComponent((req.url ?? '').slice(1));
       if (req.method !== 'POST' || !/^(sessions\/)?[\w-][\w.-]*\.json$/.test(name) || name.includes('..')) {

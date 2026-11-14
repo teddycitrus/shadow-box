@@ -51,7 +51,15 @@ export class Sound {
   }
 
   private async loadOverrides(): Promise<void> {
-    const names = [...SFX, 'crowd', ...Object.keys(ANNOUNCER_LINES).map((k) => `announcer_${k}`)];
+    const wanted = [...SFX, 'crowd', ...Object.keys(ANNOUNCER_LINES).map((k) => `announcer_${k}`)];
+    let present: string[] = [];
+    try {
+      const r = await fetch(`${import.meta.env.BASE_URL}audio-manifest`);
+      if (r.ok) present = (await r.json()) as string[];
+    } catch {
+      return;
+    }
+    const names = wanted.filter((n) => present.includes(`${n}.mp3`));
     await Promise.all(names.map(async (n) => {
       try {
         const r = await fetch(`${import.meta.env.BASE_URL}audio/${n}.mp3`);

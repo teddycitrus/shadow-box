@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -23,6 +23,11 @@ export function startServer(port: number, opts: { tickMs?: number } = {}): Promi
 
   const http = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
+    if (url.pathname === '/audio-manifest') {
+      const dir = join(ROOT, 'audio');
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.mp3')) : []));
+      return;
+    }
     let path = normalize(join(ROOT, decodeURIComponent(url.pathname)));
     if (!path.startsWith(ROOT)) {
       res.writeHead(403).end();
