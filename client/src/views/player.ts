@@ -60,8 +60,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
   const progress = h('div', { class: 'progress' }, h('i'));
   const readyBtn = button('Ready', () => {
     ready = !ready;
-    sound.unlock();
-    sound.startCrowd();
+    if (!sound.muted) void sound.unlock().then(() => sound.startCrowd());
     sendReady();
   }, 'primary');
   const stanceBtn = button('Stance: Orthodox', () => {

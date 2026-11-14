@@ -1,13 +1,12 @@
 import * as THREE from 'three';
 import type { MatchEvent, Slot } from '../../../shared/types.ts';
 import { other } from '../../../shared/types.ts';
-import { sound } from '../audio/sound.ts';
 import type { MatchLink } from '../net/link.ts';
 import { ProceduralAvatar } from '../scene/avatar.ts';
 import { Sparks } from '../scene/fp.ts';
 import { Stage } from '../scene/stage.ts';
 import { commonEvent } from '../ui/announce.ts';
-import { button, h } from '../ui/dom.ts';
+import { h } from '../ui/dom.ts';
 import { Hud } from '../ui/hud.ts';
 
 const NAMES: [string, string] = ['Red', 'Blue'];
@@ -35,11 +34,6 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
     const waiting = h('div', { class: 'panel watch' },
       h('h2', {}, `Watching ${opts.code ?? ''}`),
       h('p', { class: 'watch-status' }, 'Waiting for the fighters...'),
-      button('Enable sound', () => {
-        sound.unlock();
-        sound.startCrowd();
-        sound.announce('welcome');
-      }, 'primary'),
     );
     app.append(waiting);
     document.body.classList.add('spectating');

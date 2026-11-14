@@ -10,8 +10,38 @@ import { startSpectator } from './views/spectator.ts';
 const app = document.getElementById('app')!;
 const path = location.pathname.replace(/\/+$/, '');
 
-addEventListener('pointerdown', () => sound.unlock(), { once: true });
-addEventListener('keydown', () => sound.unlock(), { once: true });
+/** Any first interaction unlocks audio, except clicks on the sound toggle, which handles itself. */
+const firstGesture = (e: Event) => {
+  if ((e.target as Element | null)?.closest?.('.soundbtn')) return;
+  removeEventListener('pointerdown', firstGesture);
+  removeEventListener('keydown', firstGesture);
+  if (!sound.muted) void sound.unlock();
+};
+addEventListener('pointerdown', firstGesture);
+addEventListener('keydown', firstGesture);
+
+/** Always-visible sound toggle; browsers keep audio off until the first click. */
+function soundToggle(): HTMLButtonElement {
+  const b = h('button', { class: 'soundbtn', type: 'button' });
+  const render = () => {
+    b.textContent = !sound.on ? (sound.muted ? 'Sound off' : 'Turn sound on') : 'Sound on';
+    b.classList.toggle('on', sound.on);
+    b.setAttribute('aria-pressed', String(sound.on));
+  };
+  b.addEventListener('click', async () => {
+    if (sound.on) return sound.setMuted(true);
+    sound.setMuted(false);
+    const first = !document.body.classList.contains('sound-started');
+    document.body.classList.add('sound-started');
+    await sound.unlock();
+    sound.startCrowd();
+    if (first && location.pathname.startsWith('/watch/')) sound.announce('welcome');
+  });
+  sound.onChange(render);
+  render();
+  return b;
+}
+document.body.append(soundToggle());
 
 function makeInput(): InputSource {
   const input: InputSource = flag('keys') ? new KeyInput() : new CameraInput();

@@ -245,3 +245,16 @@ body.fighting .webcam .keyhelp > * { white-space: nowrap; }
 }
 .copyrow { grid-template-columns: 112px 1fr auto; }
 .linkpath { background: #0e1016; border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; font: 600 14px var(--body); color: var(--ink); letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Sound toggle */
+.soundbtn {
+  position: fixed; left: 18px; bottom: 84px; z-index: 12; display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px 8px 12px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(12, 13, 18, 0.85); font: 600 13px var(--body); cursor: pointer;
+  transition: background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.soundbtn::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #e76f51; box-shadow: 0 0 0 3px rgba(231, 111, 81, 0.25); }
+.soundbtn.on::before { background: #57cc99; box-shadow: 0 0 0 3px rgba(87, 204, 153, 0.25); }
+.soundbtn:not(.on) { border-color: rgba(233, 196, 106, 0.6); }
+.soundbtn:hover { background: #1c1f28; }
+body:not(.fighting):not(.spectating) .soundbtn { bottom: 18px; left: auto; right: 18px; }

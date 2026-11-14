@@ -36,18 +36,42 @@ export class Sound {
   private files = new Map<string, AudioBuffer>();
   private speaking: Promise<void> = Promise.resolve();
   muted = false;
+  private loaded: Promise<void> | null = null;
+  private listeners: (() => void)[] = [];
 
-  /** Must be called from a user gesture. */
-  unlock(): void {
+  /** True once audio is unlocked by a click and not muted. */
+  get on(): boolean {
+    return !!this.ctx && !this.muted;
+  }
+
+  onChange(fn: () => void): void {
+    this.listeners.push(fn);
+  }
+
+  private changed(): void {
+    for (const fn of this.listeners) fn();
+  }
+
+  /** Must be called from a user gesture. Resolves once the audio files have loaded. */
+  unlock(): Promise<void> {
     if (this.ctx) {
       void this.ctx.resume();
-      return;
+      return this.loaded!;
     }
     this.ctx = new AudioContext();
     this.out = this.ctx.createGain();
-    this.out.gain.value = 0.8;
+    this.out.gain.value = this.muted ? 0 : 0.8;
     this.out.connect(this.ctx.destination);
-    void this.loadOverrides();
+    this.loaded = this.loadOverrides();
+    this.changed();
+    return this.loaded;
+  }
+
+  setMuted(m: boolean): void {
+    this.muted = m;
+    if (this.out) this.out.gain.value = m ? 0 : 0.8;
+    if (m && 'speechSynthesis' in window) speechSynthesis.cancel();
+    this.changed();
   }
 
   private async loadOverrides(): Promise<void> {
