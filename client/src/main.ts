@@ -10,32 +10,40 @@ import { startSpectator } from './views/spectator.ts';
 const app = document.getElementById('app')!;
 const path = location.pathname.replace(/\/+$/, '');
 
-/** Any first interaction unlocks audio, except clicks on the sound toggle, which handles itself. */
+/**
+ * Sound is on by default. Browsers only allow audio after a user gesture, so the first click or
+ * key press anywhere starts it (unless the player has muted with the toggle first).
+ */
+let started = false;
+async function startSound(): Promise<void> {
+  if (started || sound.muted) return;
+  started = true;
+  await sound.unlock();
+  sound.startCrowd();
+  if (location.pathname.startsWith('/watch/')) sound.announce('welcome');
+}
 const firstGesture = (e: Event) => {
   if ((e.target as Element | null)?.closest?.('.soundbtn')) return;
   removeEventListener('pointerdown', firstGesture);
   removeEventListener('keydown', firstGesture);
-  if (!sound.muted) void sound.unlock();
+  void startSound();
 };
 addEventListener('pointerdown', firstGesture);
 addEventListener('keydown', firstGesture);
 
-/** Always-visible sound toggle; browsers keep audio off until the first click. */
+/** Always-visible sound toggle. */
 function soundToggle(): HTMLButtonElement {
   const b = h('button', { class: 'soundbtn', type: 'button' });
   const render = () => {
-    b.textContent = !sound.on ? (sound.muted ? 'Sound off' : 'Turn sound on') : 'Sound on';
-    b.classList.toggle('on', sound.on);
-    b.setAttribute('aria-pressed', String(sound.on));
+    b.textContent = sound.muted ? 'Sound off' : 'Sound on';
+    b.classList.toggle('on', !sound.muted);
+    b.setAttribute('aria-pressed', String(!sound.muted));
   };
-  b.addEventListener('click', async () => {
-    if (sound.on) return sound.setMuted(true);
+  b.addEventListener('click', () => {
+    if (!sound.muted) return sound.setMuted(true);
     sound.setMuted(false);
-    const first = !document.body.classList.contains('sound-started');
-    document.body.classList.add('sound-started');
-    await sound.unlock();
-    sound.startCrowd();
-    if (first && location.pathname.startsWith('/watch/')) sound.announce('welcome');
+    if (started) void sound.unlock();
+    else void startSound();
   });
   sound.onChange(render);
   render();
