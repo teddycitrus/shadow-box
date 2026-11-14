@@ -12,7 +12,7 @@ export class Hud {
   readonly root = h('div', { class: 'hud' });
   private bars: { hp: HTMLElement; hpGhost: HTMLElement; st: HTMLElement; stNum: HTMLElement; kd: HTMLElement; box: HTMLElement; name: HTMLElement; def: HTMLElement; call: HTMLElement; callTimer: number }[] = [];
   private clock = h('div', { class: 'clock' }, '1:00');
-  private round = h('div', { class: 'round' }, 'Round 1');
+  private round = h('div', { class: 'round' }, `Round 1 of ${RULES.rounds}`);
   private banner = h('div', { class: 'banner' });
   private count = h('div', { class: 'count' });
   private sub = h('div', { class: 'subline' });

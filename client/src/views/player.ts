@@ -169,7 +169,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
     lobby(ps: [LobbyPlayer | null, LobbyPlayer | null], spectators: number) {
       players.replaceChildren(...ps.map((p, i) => {
         const who = i === mySlot ? 'You' : opts.practice ? 'Bot' : 'Opponent';
-        const st = !p ? 'waiting to join' : !p.connected ? 'disconnected' : p.ready ? 'ready' : p.calibrated ? 'calibrated' : 'calibrating';
+        const st = !p ? 'waiting to join' : !p.connected ? 'disconnected' : p.ready ? 'ready' : p.calibrated ? 'set, not ready' : 'calibrating';
         return h('div', { class: `pl ${i ? 'blue' : 'red'} ${p?.ready ? 'ok' : ''}` }, h('b', {}, `${i ? 'Blue' : 'Red'}: ${who}`), h('span', {}, st));
       }), spectators ? h('div', { class: 'spec' }, `${spectators} watching`) : '');
     },

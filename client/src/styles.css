@@ -116,7 +116,7 @@ body.spectating .webcam { display: none; }
 .topbar { display: grid; grid-template-columns: 1fr auto 1fr; gap: 28px; align-items: start; padding: 18px 26px; }
 .side .name { font: 400 24px/1 var(--display); text-transform: uppercase; margin-bottom: 8px; display: flex; gap: 10px; align-items: center; text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6); }
 .side .kd { font: 12px var(--body); color: var(--stam); }
-.side.blue .name { justify-content: flex-end; flex-direction: row-reverse; }
+.side.blue .name { justify-content: flex-start; flex-direction: row-reverse; }
 .bar { position: relative; background: rgba(255, 255, 255, 0.08); overflow: hidden; border-radius: 2px; display: flex; }
 .side.blue .bar { justify-content: flex-end; }
 .hpbar { height: 20px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06); }
@@ -210,7 +210,6 @@ body.tuning .debug { left: auto; right: 3vw; top: auto; bottom: 2vh; width: min(
 /* Guard badges, punch callouts, stamina readout */
 .defchip { font: 600 12px var(--body); padding: 2px 8px; border-radius: 3px; background: #2b6cb0; color: #fff; opacity: 0; transition: opacity 120ms; }
 .defchip.on { opacity: 1; }
-.side.blue .defchip { margin-right: auto; }
 .stbar { height: 12px; margin-top: 2px; }
 .stlabel { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); margin-top: 6px; }
 .side.blue .stlabel { flex-direction: row-reverse; }
@@ -220,3 +219,27 @@ body.tuning .debug { left: auto; right: 3vw; top: auto; bottom: 2vh; width: min(
 .callout.on { opacity: 1; transform: none; }
 .side.red .callout { color: #ff8a8a; }
 .side.blue .callout { color: #8fb4ff; text-align: right; }
+
+/* Responsive and readability fixes */
+.watch, .end { width: max-content; max-width: 92vw; }
+.howto > .row:last-child { position: sticky; bottom: -24px; margin: 16px -24px -24px; padding: 14px 24px; background: var(--panel); box-shadow: 0 -16px 16px var(--panel); }
+.topbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.side { min-width: 0; }
+.side .name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.fighting .webcam:has(.keyhelp) { width: 320px; }
+body.fighting .webcam .keyhelp { font-size: 11px; }
+body.fighting .webcam .keyhelp > * { white-space: nowrap; }
+.menu .btn.ghost { color: #c4c3cb; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8); }
+.joinrow .btn { background: rgba(15, 17, 23, 0.82); }
+.round { font-size: clamp(13px, 0.9vw, 16px); }
+.stlabel { font-size: clamp(11px, 0.75vw, 14px); }
+.clock { font-size: clamp(50px, 3.6vw, 68px); }
+.webcam:has(.keyhelp) { width: min(40vw, 560px); }
+@media (max-width: 800px) {
+  .topbar { gap: 12px; padding: 14px; }
+  .side .name { font-size: 20px; }
+  .webcam:has(.keyhelp) { top: 112px; width: 92vw; }
+  .webcam .keyhelp { font-size: 12px; padding: 12px 16px; gap: 6px 12px; }
+  .lobby { max-height: calc(100vh - 380px); overflow: auto; }
+  body.fighting .webcam:has(.keyhelp) { display: none; }
+}
