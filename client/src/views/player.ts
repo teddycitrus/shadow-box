@@ -147,6 +147,8 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       }
     }
     if (!lastDef || lastDef.guard !== t.defense.guard || lastDef.duck !== t.defense.duck || lastDef.slip !== t.defense.slip) {
+      hud.setDefense(mySlot, t.defense);
+      gloves.setGuard(t.defense.guard);
       lastDef = t.defense;
       link.defense(t.defense, now);
     }
@@ -189,8 +191,10 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       else if (s.phase === 'break') hud.setSub(`Rest. Round ${s.round + 1} in ${Math.ceil(s.clockMs / 1000)}`);
       else hud.setSub('');
     },
-    pose(slot, p) {
+    pose(slot, p, def) {
       if (slot === mySlot) return;
+      opp.setDefense(def);
+      hud.setDefense(slot, def);
       if (performance.now() < hitStopUntil) pendingPose = p;
       else opp.setPose(p);
     },
@@ -206,6 +210,11 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
     commonEvent(ev, hud, names(), stage.scene);
     const oppSlot = other(mySlot);
     switch (ev.e) {
+      case 'throw':
+        hud.callout(ev.slot, ev.punch);
+        if (ev.slot === mySlot) gloves.punch(ev.punch);
+        else opp.playReaction({ kind: 'throw', punch: ev.punch });
+        break;
       case 'land':
         if (ev.attacker === mySlot) {
           if (ev.outcome === 'hit' || ev.outcome === 'block') {

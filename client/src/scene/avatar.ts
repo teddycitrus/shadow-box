@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { W, type Hand, type WirePose, type Zone } from '../../../shared/types.ts';
+import { W, type DefenseState, type Hand, type Punch, type WirePose, type Zone } from '../../../shared/types.ts';
 import { SW_METRES } from '../tracking/input.ts';
 
 export type Corner = 'red' | 'blue';
@@ -8,6 +8,7 @@ export type Reaction =
   | { kind: 'hit'; zone: Zone; heavy: boolean }
   | { kind: 'block'; zone: Zone }
   | { kind: 'stagger' }
+  | { kind: 'throw'; punch: Punch }
   | { kind: 'knockdown' }
   | { kind: 'getUp' }
   | { kind: 'reset' };
@@ -23,6 +24,8 @@ export interface Avatar {
   setCornerColor(c: Corner): void;
   setGassed(gassed: boolean): void;
   setTelegraph(hand: Hand | null, k: number): void;
+  /** Shows guard, duck and slip clearly, on top of the live pose. */
+  setDefense(def: DefenseState): void;
   /** World position of a hit zone, for sparks and markers. */
   zonePosition(zone: Zone, out: THREE.Vector3): THREE.Vector3;
   update(dt: number): void;
@@ -123,6 +126,12 @@ export class ProceduralAvatar implements Avatar {
   private gassed = false;
   private telegraph: { hand: Hand | null; k: number } = { hand: null, k: 0 };
   private time = 0;
+  private guardK = 0;
+  private guarding = false;
+  private shield: THREE.Mesh;
+  /** Active punch flourish: makes the punch type readable even when tracking lags. */
+  private swing: { punch: Punch; t: number } | null = null;
+  private flash: Record<Hand, number> = { left: 0, right: 0 };
 
   constructor(corner: Corner = 'red') {
     this.object.add(this.body);
@@ -156,7 +165,16 @@ export class ProceduralAvatar implements Avatar {
       const [x, y, z] = m.userData.r as number[];
       if (m.geometry === sph) m.scale.set(x, y, z);
     }
+    this.shield = new THREE.Mesh(
+      new THREE.RingGeometry(0.13, 0.2, 40),
+      new THREE.MeshBasicMaterial({ color: 0x8fd3ff, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
+    this.body.add(this.shield);
     this.setCornerColor(corner);
+  }
+
+  setDefense(def: DefenseState): void {
+    this.guarding = def.guard;
   }
 
   setCornerColor(c: Corner): void {
@@ -188,6 +206,10 @@ export class ProceduralAvatar implements Avatar {
       }
       case 'stagger':
         if (this.anim.kind === 'none') this.anim = { kind: 'stagger', t: 0 };
+        break;
+      case 'throw':
+        this.swing = { punch: r.punch, t: 0 };
+        this.flash[r.punch.hand] = 1;
         break;
       case 'knockdown':
         this.anim = { kind: 'falling', t: 0 };
@@ -251,9 +273,43 @@ export class ProceduralAvatar implements Avatar {
       for (const i of [W.lWrist, W.rWrist, W.lIndex, W.rIndex]) P[i].y -= 0.12;
       for (const i of [W.lElbow, W.rElbow]) P[i].y -= 0.05;
     }
+    // Guard: pull both gloves up in front of the face so blocking reads clearly.
+    this.guardK += ((this.guarding && fall < 0.05 ? 1 : 0) - this.guardK) * Math.min(1, dt * 12);
+    if (this.guardK > 0.01) {
+      const face = P[W.nose];
+      for (const [wr, ix, el, sx] of [[W.lWrist, W.lIndex, W.lElbow, 1], [W.rWrist, W.rIndex, W.rElbow, -1]] as const) {
+        const want = new THREE.Vector3(face.x + sx * 0.075, face.y - 0.05, face.z + 0.13);
+        const delta = want.sub(P[wr]).multiplyScalar(this.guardK * 0.85);
+        P[wr].add(delta);
+        P[ix].add(delta);
+        P[el].addScaledVector(delta, 0.4);
+      }
+    }
+    // Punch flourish by type: straights drive forward, hooks arc across, uppercuts rise.
+    if (this.swing) {
+      this.swing.t += dt;
+      const k = Math.sin(Math.min(1, this.swing.t / 0.32) * Math.PI);
+      const { punch } = this.swing;
+      const sx = punch.hand === 'left' ? 1 : -1;
+      const body = punch.target === 'body' ? -0.22 : 0;
+      const off = punch.type === 'jab' || punch.type === 'cross'
+        ? new THREE.Vector3(-sx * 0.05, body, 0.42)
+        : punch.type.endsWith('Hook')
+          ? new THREE.Vector3(-sx * 0.28 * k + sx * 0.12 * (1 - k), body + 0.02, 0.28)
+          : new THREE.Vector3(-sx * 0.04, 0.28 + body * 0.3, 0.22);
+      const wr = punch.hand === 'left' ? [W.lWrist, W.lIndex] : [W.rWrist, W.rIndex];
+      for (const i of wr) P[i].addScaledVector(off, k);
+      P[punch.hand === 'left' ? W.lElbow : W.rElbow].addScaledVector(off, k * 0.45);
+      if (this.swing.t > 0.32) this.swing = null;
+    }
     for (const p of P) p.y -= drop;
 
     this.pose(P);
+
+    const sm = this.shield.material as THREE.MeshBasicMaterial;
+    sm.opacity = this.guardK * (0.45 + Math.sin(this.time * 6) * 0.1);
+    this.shield.visible = sm.opacity > 0.01;
+    this.shield.position.copy(this.parts.head.position).add(new THREE.Vector3(0, -0.04, 0.2));
 
     this.body.rotation.x = -fall * (Math.PI / 2 - 0.12);
     this.body.position.y = fall * 0.12;
@@ -261,7 +317,9 @@ export class ProceduralAvatar implements Avatar {
 
     for (const h of ['left', 'right'] as Hand[]) {
       const on = this.telegraph.hand === h ? this.telegraph.k : 0;
-      this.gloveMats[h].emissive.setRGB(on * 0.9, on * 0.75, on * 0.2);
+      this.flash[h] = Math.max(0, this.flash[h] - dt * 3);
+      const f = this.flash[h];
+      this.gloveMats[h].emissive.setRGB(on * 0.9 + f, on * 0.75 + f * 0.85, on * 0.2 + f * 0.5);
     }
   }
 

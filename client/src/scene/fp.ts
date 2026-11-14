@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { W, type WirePose } from '../../../shared/types.ts';
+import { W, type Punch, type WirePose } from '../../../shared/types.ts';
 import type { Corner } from './avatar.ts';
 
 /** The player's own gloves in the foreground, following their wrists (mirrored). */
@@ -8,6 +8,10 @@ export class FirstPersonGloves {
   private gloves: THREE.Mesh[] = [];
   private target = [new THREE.Vector3(0.16, -0.25, -0.45), new THREE.Vector3(-0.16, -0.25, -0.45)];
   private mat = new THREE.MeshStandardMaterial({ color: 0xc1121f, roughness: 0.35 });
+  private guard = false;
+  private guardK = 0;
+  private swing: { k: number; punch: Punch; t: number } | null = null;
+  private ring: THREE.Mesh;
 
   constructor() {
     const geo = new THREE.SphereGeometry(1, 24, 16);
@@ -23,6 +27,22 @@ export class FirstPersonGloves {
       this.gloves.push(g);
       this.object.add(g);
     }
+    this.ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.2, 0.26, 48),
+      new THREE.MeshBasicMaterial({ color: 0x8fd3ff, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }),
+    );
+    this.ring.position.set(0, -0.12, -0.5);
+    this.object.add(this.ring);
+  }
+
+  /** Raises both gloves to the face and shows a guard ring, so blocking is obvious. */
+  setGuard(on: boolean): void {
+    this.guard = on;
+  }
+
+  /** Visible punch by type: the glove on that hand (screen side) drives out along its path. */
+  punch(p: Punch): void {
+    this.swing = { k: p.hand === 'right' ? 0 : 1, punch: p, t: 0 };
   }
 
   setCorner(c: Corner): void {
@@ -42,7 +62,23 @@ export class FirstPersonGloves {
 
   update(dt: number): void {
     const k = 1 - Math.exp(-dt * 22);
-    this.gloves.forEach((g, i) => g.position.lerp(this.target[i], k));
+    this.guardK += ((this.guard ? 1 : 0) - this.guardK) * Math.min(1, dt * 12);
+    this.gloves.forEach((g, i) => {
+      const want = this.target[i].clone().lerp(new THREE.Vector3(i === 0 ? 0.11 : -0.11, -0.13, -0.52), this.guardK * 0.8);
+      const s = this.swing;
+      if (s && s.k === i) {
+        const u = Math.sin(Math.min(1, s.t / 0.3) * Math.PI);
+        const sx = i === 0 ? 1 : -1;
+        const body = s.punch.target === 'body' ? -0.14 : 0;
+        const off = s.punch.type === 'jab' || s.punch.type === 'cross' ? new THREE.Vector3(-sx * 0.08, 0.05 + body, -0.55)
+          : s.punch.type.endsWith('Hook') ? new THREE.Vector3(-sx * 0.3 * u + sx * 0.15, 0.08 + body, -0.4)
+            : new THREE.Vector3(-sx * 0.05, 0.25, -0.35);
+        want.addScaledVector(off, u);
+      }
+      g.position.lerp(want, s && s.k === i ? 0.6 : k);
+    });
+    if (this.swing && (this.swing.t += dt) > 0.3) this.swing = null;
+    (this.ring.material as THREE.MeshBasicMaterial).opacity = this.guardK * 0.18;
   }
 }
 

@@ -58,7 +58,9 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
       avatars.forEach((a, i) => a.setGassed(s.fighters[i].gassed));
       document.body.classList.toggle('fighting', s.phase !== 'lobby');
     },
-    pose(slot, p) {
+    pose(slot, p, def) {
+      avatars[slot].setDefense(def);
+      if (!opts.demo) hud.setDefense(slot, def);
       if (performance.now() >= hitStopUntil[slot]) avatars[slot].setPose(p);
     },
     event(ev: MatchEvent) {
@@ -69,6 +71,10 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
         if (ev.stagger) def.playReaction({ kind: 'stagger' });
         sparks.spawn(def.zonePosition(ev.zone, tmp), ev.outcome === 'hit' ? 0xffd27a : 0x9fc6ff, ev.outcome === 'hit' ? 40 : 14);
         if (ev.outcome === 'hit') hitStopUntil = hitStopUntil.map((v, i) => (i === other(ev.attacker) ? performance.now() + 60 : v));
+      }
+      if (ev.e === 'throw') {
+        avatars[ev.slot].playReaction({ kind: 'throw', punch: ev.punch });
+        if (!opts.demo) hud.callout(ev.slot, ev.punch);
       }
       if (ev.e === 'knockdown') avatars[ev.slot as Slot].playReaction({ kind: 'knockdown' });
       if (ev.e === 'getUp') avatars[ev.slot].playReaction({ kind: 'getUp' });

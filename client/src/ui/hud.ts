@@ -1,5 +1,5 @@
 import { RULES } from '../../../shared/rules.ts';
-import type { FighterSnapshot, MatchResult, MatchSnapshot, Slot, Zone } from '../../../shared/types.ts';
+import type { DefenseState, FighterSnapshot, MatchResult, MatchSnapshot, Punch, Slot, Zone } from '../../../shared/types.ts';
 import { h } from './dom.ts';
 
 const fmt = (ms: number) => {
@@ -10,7 +10,7 @@ const fmt = (ms: number) => {
 /** Top bar (HP, stamina, round clock), centre banners, referee count and hit feedback. */
 export class Hud {
   readonly root = h('div', { class: 'hud' });
-  private bars: { hp: HTMLElement; hpGhost: HTMLElement; st: HTMLElement; kd: HTMLElement; box: HTMLElement; name: HTMLElement }[] = [];
+  private bars: { hp: HTMLElement; hpGhost: HTMLElement; st: HTMLElement; stNum: HTMLElement; kd: HTMLElement; box: HTMLElement; name: HTMLElement; def: HTMLElement; call: HTMLElement; callTimer: number }[] = [];
   private clock = h('div', { class: 'clock' }, '1:00');
   private round = h('div', { class: 'round' }, 'Round 1');
   private banner = h('div', { class: 'banner' });
@@ -32,12 +32,17 @@ export class Hud {
       const st = h('div', { class: 'fill st' });
       const kd = h('span', { class: 'kd' });
       const name = h('span', {}, names[i]);
+      const stNum = h('span', { class: 'stnum' }, '100');
+      const def = h('span', { class: 'defchip' });
+      const call = h('div', { class: 'callout' });
       const box = h('div', { class: `side ${i ? 'blue' : 'red'}` },
-        h('div', { class: 'name' }, name, kd),
+        h('div', { class: 'name' }, name, kd, def),
         h('div', { class: 'bar hpbar' }, hpGhost, hp),
+        h('div', { class: 'stlabel' }, h('span', {}, 'Stamina'), stNum),
         h('div', { class: 'bar stbar' }, st),
+        call,
       );
-      this.bars.push({ hp, hpGhost, st, kd, box, name });
+      this.bars.push({ hp, hpGhost, st, stNum, kd, box, name, def, call, callTimer: 0 });
       return box;
     };
     for (const z of ['head-left', 'head-right', 'body-left', 'body-right'] as Zone[]) this.zones.append(h('i', { 'data-zone': z }));
@@ -45,6 +50,28 @@ export class Hud {
       h('div', { class: 'topbar' }, side(0), h('div', { class: 'center' }, this.round, this.clock), side(1)),
       this.banner, this.count, this.sub, this.caption, this.flashL, this.flashR, this.zones,
     );
+  }
+
+  /** Shows GUARD / DUCK / SLIP next to a fighter's name. */
+  setDefense(slot: Slot, d: DefenseState): void {
+    const parts = [d.guard && 'Guard', d.duck && 'Duck', d.slip !== 'none' && `Slip ${d.slip}`].filter(Boolean) as string[];
+    const el = this.bars[slot].def;
+    el.textContent = parts.join(' + ');
+    el.classList.toggle('on', parts.length > 0);
+  }
+
+  /** Big punch-type callout under a fighter's bars. */
+  callout(slot: Slot, p: Punch): void {
+    const b = this.bars[slot];
+    const names: Record<string, string> = {
+      jab: 'Jab', cross: 'Cross', leftHook: 'Left hook', rightHook: 'Right hook', leftUppercut: 'Left uppercut', rightUppercut: 'Right uppercut',
+    };
+    b.call.textContent = `${names[p.type]}${p.target === 'body' ? ' to the body' : ''}`;
+    b.call.classList.remove('on');
+    void b.call.offsetWidth;
+    b.call.classList.add('on');
+    clearTimeout(b.callTimer);
+    b.callTimer = window.setTimeout(() => b.call.classList.remove('on'), 900);
   }
 
   setNames(names: [string, string]): void {
@@ -67,6 +94,7 @@ export class Hud {
     b.hp.style.width = `${hp}%`;
     b.hpGhost.style.width = `${hp}%`;
     b.st.style.width = `${(f.stamina / RULES.maxStamina) * 100}%`;
+    b.stNum.textContent = f.exhausted ? 'EXHAUSTED' : f.gassed ? `${Math.round(f.stamina)} GASSED` : String(Math.round(f.stamina));
     b.box.classList.toggle('gassed', f.gassed);
     b.box.classList.toggle('exhausted', f.exhausted);
     b.kd.textContent = f.knockdowns ? ' ' + 'KD '.repeat(f.knockdowns).trim() : '';
