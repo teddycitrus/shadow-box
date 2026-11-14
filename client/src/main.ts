@@ -58,37 +58,50 @@ function showError(msg: string): void {
 
 function howTo(): HTMLElement {
   const close = button('Close', () => el.remove(), 'primary');
-  const el = h('div', { class: 'modal' }, h('div', { class: 'panel howto' },
+  const section = (name: string, ...kids: (HTMLElement | string)[]) => h('section', { class: 'howto-sec' }, h('h3', {}, name), ...kids);
+  const el = h('div', { class: 'modal' }, h('div', { class: 'panel howto', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'How to play' },
     h('h2', {}, 'How to play'),
-    h('ol', {},
-      h('li', {}, 'Put the laptop at chest height and stand 1.5 to 2 m away.'),
-      h('li', {}, 'Use good light in front of you, not behind you.'),
-      h('li', {}, 'Make sure your head, shoulders, elbows and hands are in frame.'),
-      h('li', {}, 'Hold your guard for 2 seconds to calibrate, then press Ready.'),
+    h('div', { class: 'howto-grid' },
+      section('Setup',
+        h('ol', { class: 'steps' },
+          h('li', {}, 'Put the laptop at chest height and stand 1.5 to 2 m away.'),
+          h('li', {}, 'Use good light in front of you, not behind you.'),
+          h('li', {}, 'Make sure your head, shoulders, elbows and hands are in frame.'),
+          h('li', {}, 'Hold your guard for 2 seconds to calibrate, then press Ready.'),
+        ),
+      ),
+      section('Attacks',
+        h('ul', { class: 'moves' },
+          h('li', {}, h('b', {}, 'Jab / cross'), 'Punch straight at the camera with your lead / rear hand.'),
+          h('li', {}, h('b', {}, 'Hook'), 'Elbow bent, hand at shoulder height, swing across.'),
+          h('li', {}, h('b', {}, 'Uppercut'), 'Start below your chin and drive the fist up.'),
+        ),
+        h('p', { class: 'note' }, 'Punch high for the head, low for the body. Return your hand to guard before throwing it again.'),
+      ),
+      section('Defense',
+        h('ul', { class: 'moves' },
+          h('li', {}, h('b', {}, 'High guard'), 'Both gloves up by your face. Blocks most of the damage, but holding it and absorbing hits drains stamina.'),
+          h('li', {}, h('b', {}, 'Duck'), 'Drop your head well down. Dodges head shots.'),
+          h('li', {}, h('b', {}, 'Slip'), 'Move your head to the side. Slip away from a straight to dodge it.'),
+        ),
+      ),
+      section('Rules',
+        h('p', {}, 'Three 60 s rounds, 100 HP. Punching costs stamina; below 30 you are gassed and hit softer. At 0 HP you go down: hold a steady guard to beat the count. Three knockdowns is a TKO.'),
+      ),
+      section('Keyboard mode (?keys=1)',
+        h('div', { class: 'keyhelp' }, ...KEY_HELP.map(([k, v]) => h('div', {}, h('kbd', {}, k), ' ', v))),
+      ),
     ),
-    h('h3', {}, 'Attacks'),
-    h('ul', {},
-      h('li', {}, h('b', {}, 'Jab / cross: '), 'punch straight at the camera with your lead / rear hand.'),
-      h('li', {}, h('b', {}, 'Hook: '), 'elbow bent, hand at shoulder height, swing across.'),
-      h('li', {}, h('b', {}, 'Uppercut: '), 'start below your chin and drive the fist up.'),
-      h('li', {}, 'Punch high for the head, low for the body. Return your hand to guard before throwing it again.'),
-    ),
-    h('h3', {}, 'Defense'),
-    h('ul', {},
-      h('li', {}, h('b', {}, 'High guard: '), 'both gloves up by your face. Blocks most of the damage, but holding it and absorbing hits drains stamina.'),
-      h('li', {}, h('b', {}, 'Duck: '), 'drop your head well down. Dodges head shots.'),
-      h('li', {}, h('b', {}, 'Slip: '), 'move your head to the side. Slip away from a straight to dodge it.'),
-    ),
-    h('h3', {}, 'Rules'),
-    h('p', {}, 'Three 60 s rounds, 100 HP. Punching costs stamina; below 30 you are gassed and hit softer. At 0 HP you go down: hold a steady guard to beat the count. Three knockdowns is a TKO.'),
-    h('h3', {}, 'Keyboard mode (?keys=1)'),
-    h('div', { class: 'keyhelp' }, ...KEY_HELP.map(([k, v]) => h('div', {}, h('kbd', {}, k), ' ', v))),
     h('div', { class: 'row' }, close),
   ));
+  el.addEventListener('click', (e) => e.target === el && el.remove());
+  el.addEventListener('keydown', (e) => e.key === 'Escape' && el.remove());
+  queueMicrotask(() => close.focus());
   return el;
 }
 
 function title(): void {
+  document.body.classList.add('title-screen');
   startSpectator(app, new DemoLink(), { demo: true });
   const code = h('input', { placeholder: 'CODE', maxlength: '4', class: 'codein', autocomplete: 'off', spellcheck: 'false' });
   const join = () => {
@@ -96,8 +109,8 @@ function title(): void {
     if (/^[A-Z]{4}$/.test(c)) go(`/play/${c}`);
   };
   code.addEventListener('keydown', (e) => e.key === 'Enter' && join());
-  app.append(h('div', { class: 'scrim' }), h('div', { class: 'title' },
-    h('h1', {}, 'Shadow', h('span', {}, 'Box')),
+  app.append(h('div', { class: 'scrim' }, h('i', { class: 'slash red' }), h('i', { class: 'slash blue' })), h('div', { class: 'title' },
+    h('h1', {}, h('span', { class: 't1' }, 'Keyboard'), h('span', { class: 't2' }, 'Warrior')),
     h('div', { class: 'menu' },
       button('Create match', () => go('/create'), 'primary'),
       h('div', { class: 'joinrow' }, code, button('Join', join)),

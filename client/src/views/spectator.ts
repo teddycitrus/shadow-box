@@ -19,6 +19,7 @@ export function startSpectator(app: HTMLElement, link: MatchLink, opts: { code?:
   const stage = new Stage(host);
   const hud = new Hud(NAMES);
   if (!opts.demo) app.append(hud.root);
+  else hud.audible = false;
 
   const avatars = [new ProceduralAvatar('red'), new ProceduralAvatar('blue')];
   avatars[0].object.position.set(-0.75, 0, 0);

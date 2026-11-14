@@ -106,8 +106,9 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
     share,
     h('div', { class: 'calib' }, status, progress, learnedNote),
     players,
-    h('div', { class: 'row' }, stanceBtn, input.kind === 'camera' ? recal : null, readyBtn),
+    h('div', { class: 'row' }, stanceBtn, input.kind === 'camera' ? recal : null),
     input.kind === 'camera' ? h('div', { class: 'row' }, reteach, skipTeach) : null,
+    h('div', { class: 'row ready-row' }, readyBtn),
     h('p', { class: 'hint' }, input.kind === 'keys'
       ? 'Keyboard mode. Press Ready to start.'
       : 'Laptop at chest height, 1.5 to 2 m away, light in front of you. Hold your guard for 2 seconds to calibrate.'),
@@ -176,7 +177,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       players.replaceChildren(...ps.map((p, i) => {
         const who = i === mySlot ? 'You' : opts.practice ? 'Bot' : 'Opponent';
         const st = !p ? 'waiting to join' : !p.connected ? 'disconnected' : p.ready ? 'ready' : p.calibrated ? 'set, not ready' : 'calibrating';
-        return h('div', { class: `pl ${i ? 'blue' : 'red'} ${p?.ready ? 'ok' : ''}` }, h('b', {}, `${i ? 'Blue' : 'Red'}: ${who}`), h('span', {}, st));
+        return h('div', { class: `pl ${i ? 'blue' : 'red'} ${p?.ready ? 'ok' : ''}` }, h('i', { class: 'corner' }, i ? 'Blue' : 'Red'), h('b', {}, who), h('span', {}, st));
       }), spectators ? h('div', { class: 'spec' }, `${spectators} watching`) : '');
     },
     state(s, rejoinMs) {
@@ -252,6 +253,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       case 'matchEnd': {
         if (log) void saveSession('match');
         const won = ev.result.winner === mySlot;
+        endPanel.className = `panel end ${ev.result.winner === null ? 'draw' : won ? 'win' : 'lose'}`;
         endPanel.replaceChildren(
           h('h2', {}, ev.result.winner === null ? 'Draw' : won ? 'You win' : 'You lose'),
           h('div', { class: 'row' },
