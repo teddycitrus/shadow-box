@@ -151,7 +151,14 @@ body:not(.fighting) .zones, body:not(.fighting) .topbar { opacity: 0.35; }
   position: fixed; left: 12px; top: 120px; z-index: 8; margin: 0; padding: 10px; background: rgba(0, 0, 0, 0.7);
   font: 11px/1.4 ui-monospace, monospace; white-space: pre; pointer-events: none;
 }
-.recorder { position: fixed; left: 12px; bottom: 80px; z-index: 8; display: flex; gap: 8px; align-items: center; padding: 10px; }
+.tuner { position: fixed; left: 4vw; bottom: 2vh; width: min(46vw, 640px); z-index: 8; padding: 16px 18px; }
+.tune-step { font: 24px/1.1 var(--display); }
+.tune-how { color: var(--dim); margin-top: 6px; }
+.tune-live { margin-top: 8px; font: 13px ui-monospace, monospace; color: #57cc99; min-height: 1em; }
+.tune-note { margin-top: 8px; font-size: 13px; color: var(--stam); }
+.tuner .row { margin-top: 10px; }
+body.tuning .webcam { top: 4vh; transform: none; width: min(46vw, 560px); }
+body.tuning .debug { left: auto; right: 3vw; top: auto; bottom: 2vh; width: min(400px, 40vw); white-space: pre-wrap; }
 
 @media (max-width: 800px) {
   .webcam { left: 50%; top: 6vh; transform: translateX(-50%); width: 88vw; }

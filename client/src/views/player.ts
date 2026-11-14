@@ -11,6 +11,7 @@ import { KEY_HELP, type InputSource } from '../tracking/input.ts';
 import { commonEvent } from '../ui/announce.ts';
 import { button, flag, go, h } from '../ui/dom.ts';
 import { Hud } from '../ui/hud.ts';
+import { tuner } from '../ui/tuner.ts';
 import { WebcamBox } from '../ui/webcam.ts';
 
 const EYE = new THREE.Vector3(0, 1.58, 0.8);
@@ -102,8 +103,11 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
 
   const debug = flag('debug') ? h('pre', { class: 'debug' }) : null;
   if (debug) app.append(debug);
-  const rec = flag('record') ? recorder(input) : null;
-  if (rec) app.append(rec.el);
+  const rec = flag('record') ? tuner(input) : null;
+  if (rec) {
+    app.append(rec.el);
+    document.body.classList.add('tuning');
+  }
 
   function sendReady(): void {
     link.ready(ready, input.calibrated, stance);
@@ -128,7 +132,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       link.defense(t.defense, now);
     }
     for (const p of t.punches) link.punch({ type: p.type, hand: p.hand, target: p.target }, p.at);
-    rec?.push();
+    rec?.push(t);
   };
 
   // Link to view.
@@ -299,29 +303,4 @@ function debugText(input: InputSource, snap: MatchSnapshot | null): string {
   }
   if (snap) lines.push(`phase ${snap.phase} round ${snap.round} hp ${snap.fighters.map((f) => f.hp).join('/')} st ${snap.fighters.map((f) => f.stamina.toFixed(0)).join('/')} max ${RULES.maxHp}`);
   return lines.join('\n');
-}
-
-/** ?record=1: captures raw frames to JSON for classifier test fixtures. */
-function recorder(input: InputSource): { el: HTMLElement; push(): void } {
-  let frames: unknown[] = [];
-  let on = false;
-  const label = h('span', {}, '0 frames');
-  const toggle = button('Record', () => {
-    on = !on;
-    if (on) frames = [];
-    toggle.textContent = on ? 'Stop' : 'Record';
-  });
-  const save = button('Save JSON', () => {
-    const blob = new Blob([JSON.stringify({ calibration: input.calibration, frames, expected: [] })], { type: 'application/json' });
-    const a = h('a', { href: URL.createObjectURL(blob), download: `pose-${Date.now()}.json` });
-    a.click();
-  });
-  return {
-    el: h('div', { class: 'panel recorder' }, toggle, save, label),
-    push() {
-      if (!on || !input.frame) return;
-      frames.push(input.frame);
-      label.textContent = `${frames.length} frames`;
-    },
-  };
 }

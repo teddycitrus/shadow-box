@@ -126,13 +126,35 @@ describe('defense', () => {
 describe('recorded fixtures', () => {
   const dir = 'tests/fixtures';
   const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')) : [];
-  it.skipIf(files.length === 0)('replays recorded sessions with their labelled punches', () => {
-    for (const file of files) {
-      const rec = JSON.parse(readFileSync(`${dir}/${file}`, 'utf8')) as { calibration: typeof cal; frames: PoseFrame[]; expected?: PunchType[] };
-      if (!rec.expected) continue;
-      const c = new Classifier(rec.calibration);
-      const got = rec.frames.flatMap((f) => c.update(f).punches.map((p) => p.type));
-      expect(got, file).toEqual(rec.expected);
-    }
-  });
+  interface Recording {
+    calibration: typeof cal | null;
+    frames: PoseFrame[];
+    stance?: Stance;
+    expected?: PunchType[];
+    expectedTarget?: Target;
+    defense?: 'guard' | 'duck' | 'slipLeft' | 'slipRight';
+    reps?: number;
+  }
+  if (!files.length) it.skip('no recorded fixtures yet', () => {});
+  for (const file of files) {
+    const rec = JSON.parse(readFileSync(`${dir}/${file}`, 'utf8')) as Recording;
+    it.skipIf(!rec.expected || !rec.calibration)(`replays ${file}`, () => {
+      const c = new Classifier(rec.calibration!);
+      c.stance = rec.stance ?? 'orthodox';
+      const punches: Punch[] = [];
+      let edges = 0;
+      let was = false;
+      for (const f of rec.frames) {
+        const out = c.update(f);
+        punches.push(...out.punches);
+        const d = out.defense;
+        const on = rec.defense === 'guard' ? d.guard : rec.defense === 'duck' ? d.duck : rec.defense === 'slipLeft' ? d.slip === 'left' : d.slip === 'right';
+        if (on && !was) edges++;
+        was = on;
+      }
+      expect(punches.map((p) => p.type), file).toEqual(rec.expected);
+      if (rec.expectedTarget) expect(punches.map((p) => p.target), file).toEqual(rec.expected!.map(() => rec.expectedTarget));
+      if (rec.defense) expect(edges, file).toBe(rec.reps ?? 5);
+    });
+  }
 });
