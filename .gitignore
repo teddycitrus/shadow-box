@@ -8,3 +8,4 @@ recordings/
 .claude/
 *.log
 tests/fixtures/sessions/
+.wrangler/

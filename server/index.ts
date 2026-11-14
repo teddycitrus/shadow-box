@@ -5,8 +5,9 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { ClientMsg, ServerMsg, Slot } from '../shared/types.ts';
+import type { ServerMsg } from '../shared/types.ts';
 import { Room, newCode, type Conn } from './room.ts';
+import { MAX_MESSAGE_BYTES, Session, type RoomRegistry } from './session.ts';
 
 const ROOT = resolve('dist/client');
 const ROOM_IDLE_MS = 10 * 60_000;
@@ -46,48 +47,24 @@ export function startServer(port: number, opts: { tickMs?: number } = {}): Promi
     createReadStream(path).pipe(res);
   });
 
-  const wss = new WebSocketServer({ server: http, path: '/ws', maxPayload: 64 * 1024 });
+  const wss = new WebSocketServer({ server: http, path: '/ws', maxPayload: MAX_MESSAGE_BYTES });
 
+  const registry: RoomRegistry = {
+    create() {
+      const room = new Room(newCode((c) => rooms.has(c)), now);
+      rooms.set(room.code, room);
+      return room;
+    },
+    get: (code) => rooms.get(code),
+  };
+
+  // The room is chosen by the first create/join/watch message. Query parameters (?create=1,
+  // ?code=XXXX) are only needed for Durable Object routing on Cloudflare and are ignored here.
   wss.on('connection', (ws: WebSocket) => {
     const conn: Conn = { send: (m: ServerMsg) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)) };
-    let room: Room | null = null;
-    let slot: Slot | null = null;
-
-    ws.on('message', (data) => {
-      let m: ClientMsg;
-      try {
-        m = JSON.parse(String(data)) as ClientMsg;
-      } catch {
-        return;
-      }
-      if (m.t === 'ping') {
-        conn.send({ t: 'pong', c: m.c, s: now() });
-        return;
-      }
-      if (!room) {
-        if (m.t === 'create') {
-          room = new Room(newCode((c) => rooms.has(c)), now);
-          rooms.set(room.code, room);
-          slot = room.join(conn);
-        } else if (m.t === 'join' || m.t === 'watch') {
-          const code = String(m.code ?? '').toUpperCase();
-          room = rooms.get(code) ?? null;
-          if (!room) return conn.send({ t: 'error', msg: `Room ${code} not found` });
-          if (m.t === 'watch') room.watch(conn);
-          else {
-            slot = room.join(conn, m.token);
-            if (slot === null) {
-              conn.send({ t: 'error', msg: `Room ${code} is full. Opening the spectator view.` });
-              room = null;
-            }
-          }
-        }
-        return;
-      }
-      if (slot !== null) room.handle(conn, slot, m);
-    });
-
-    ws.on('close', () => room?.leave(conn));
+    const session = new Session(conn, registry, now);
+    ws.on('message', (data) => session.message(String(data)));
+    ws.on('close', () => session.close());
   });
 
   const timer = setInterval(() => {

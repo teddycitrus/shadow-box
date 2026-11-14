@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { Match } from '../shared/match.ts';
 import { RULES } from '../shared/rules.ts';
 import {
@@ -22,6 +21,11 @@ interface Player {
 }
 
 const ACTIVE = new Set(['countdown', 'round', 'break']);
+
+/** Web Crypto works in Node and in Workers, so the room runs unchanged in both. */
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /** One 1v1 room: two player slots, any number of spectators, one authoritative Match. */
 export class Room {
@@ -52,7 +56,7 @@ export class Room {
     }
     if (free < 0) return null;
     this.players[free] = {
-      token: randomBytes(12).toString('hex'), conn: null, calibrated: false, ready: false,
+      token: randomHex(12), conn: null, calibrated: false, ready: false,
       stance: 'orthodox', def: NO_DEFENSE, pose: null, leftAt: 0,
     };
     return this.attach(free as Slot, conn);

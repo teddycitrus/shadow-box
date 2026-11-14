@@ -9,11 +9,13 @@
   "scripts": {
     "assets": "node scripts/copy-assets.mjs",
     "dev": "npm run assets && concurrently -k -n server,client \"tsx watch server/index.ts\" \"vite\"",
-    "build": "npm run assets && vite build",
+    "build": "npm run assets && vite build && node scripts/audio-manifest.mjs",
     "start": "tsx server/index.ts",
     "tunnel": "cloudflared tunnel --url http://localhost:3000",
+    "deploy": "npm run build && wrangler deploy",
+    "cf:dev": "npm run build && wrangler dev",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
     "gen:audio": "tsx scripts/gen-audio.ts"
   },
   "dependencies": {
@@ -22,6 +24,7 @@
     "ws": "8.22.1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "5.20261106.1",
     "@types/node": "24.19.2",
     "@types/three": "0.187.0",
     "@types/ws": "8.18.2",
@@ -29,6 +32,7 @@
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "vite": "8.3.6",
-    "vitest": "5.1.0"
+    "vitest": "5.1.0",
+    "wrangler": "4.157.0"
   }
 }

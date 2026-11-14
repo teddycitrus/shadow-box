@@ -34,7 +34,12 @@ export class OnlineLink implements MatchLink {
   }
 
   private open(): void {
-    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+    // The query routes the socket to its room's Durable Object on Cloudflare; the first message
+    // below still names the room, which is all the Node server needs.
+    const m0 = this.mode;
+    const code = this.code ?? ('join' in m0 ? m0.join : 'watch' in m0 ? m0.watch : null);
+    const query = code ? `code=${encodeURIComponent(code)}` : 'create=1';
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?${query}`);
     this.ws = ws;
     ws.onopen = () => {
       this.onConnection(true);

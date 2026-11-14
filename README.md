@@ -104,6 +104,24 @@ flowchart LR
   Bot -.->|"state, events, bot pose"| View
 ```
 
+The same `Room` and `Match` code also runs serverless on Cloudflare (`worker/index.ts`, `wrangler.jsonc`). Workers Static Assets serves `dist/client`, and each room is one SQLite-backed Durable Object named by its code. The client connects to `/ws?create=1` or `/ws?code=CODE` so the Worker can route the socket before the first message; the Node server ignores the query and routes by that first create/join/watch message, as before. Both runtimes share the per-socket logic in `server/session.ts`.
+
+```mermaid
+flowchart LR
+  C(["Browser<br/><sub>player or spectator</sub>"])
+  subgraph CF["Cloudflare"]
+    W["Worker<br/><sub>worker/index.ts</sub>"]
+    A[("Static Assets<br/><sub>dist/client</sub>")]
+    DO["RoomDO per code<br/><sub>Room + Match, 60 Hz tick</sub>"]
+  end
+  C -->|"page, model, WASM, audio"| A
+  C -->|"/ws?create=1 or ?code=CODE"| W
+  C -->|"/audio-manifest"| W
+  W -->|"audio-manifest.json"| A
+  W -->|"upgrade, idFromName(CODE)"| DO
+  DO <-->|"same ws protocol"| C
+```
+
 One punch, from camera frame to both screens:
 
 ```mermaid
@@ -157,7 +175,8 @@ Hard limits:
 - Punch timestamps older than 400 ms on arrival are clamped to 400 ms, and timestamps in the future are clamped to now.
 - WebSocket messages are capped at 64 KB (`maxPayload`). Pose messages must carry exactly 13 landmarks (39 numbers).
 - A disconnect mid-match pauses it; the player has 60 s to rejoin with the token stored in `localStorage`, then forfeits.
-- Rooms with nobody connected are dropped after 10 minutes without activity.
+- Rooms with nobody connected are dropped after 10 minutes without activity. On Cloudflare a room lives only in its Durable Object's memory, which stops ticking when the last socket closes and can be evicted soon after.
+- On Cloudflare, `/ws?create=1` picks a random code in the Worker and retries up to 8 times if that room is in use.
 
 ### Move classification
 
@@ -229,11 +248,24 @@ npm run tunnel
 
 This starts a cloudflared quick tunnel to http://localhost:3000 and prints a public HTTPS URL. Browsers only allow the camera over HTTPS (or on localhost), so share that URL rather than a LAN address.
 
+### Deploy (serverless, free)
+
+The game can run on Cloudflare's free Workers plan with no server of your own. Log in once, then deploy:
+
+```sh
+npx wrangler login
+npm run deploy
+```
+
+`npm run deploy` builds the client, writes `dist/client/audio-manifest.json` and runs `wrangler deploy`, which prints a `https://keyboard-warrior.<your-subdomain>.workers.dev` URL. `npm run cf:dev` runs the same Worker and Durable Objects locally on http://localhost:8787 without a login.
+
+Free plan limits, reset daily at 00:00 UTC: 100,000 Worker requests and 100,000 Durable Object requests (each socket connect is one; incoming WebSocket messages count 20 to 1), and 13,000 GB-s of Durable Object duration, which is about 29 hours of open rooms. Static asset requests are free. Over a limit, new requests fail until the reset. The Node server with `npm run tunnel` remains an option.
+
 Checks:
 
 ```sh
 npm test          # Vitest: classifier, teach step, recorded fixtures, hit resolution, match rules, rooms
-npm run typecheck # tsc --noEmit
+npm run typecheck # tsc for the client, server and shared code, then for worker/ with Workers types
 ```
 
 ### Tuning
@@ -331,6 +363,10 @@ client/
 server/
   index.ts            HTTP static server, WebSocket /ws, room registry
   room.ts             one room: players, spectators, authoritative Match
+  session.ts          per-socket message handling shared with the Worker
+worker/
+  index.ts            Cloudflare Worker and the RoomDO Durable Object
+wrangler.jsonc        Cloudflare config: assets, Durable Object binding, migration
 shared/
   types.ts            wire protocol and shared types
   rules.ts            every game number
@@ -338,6 +374,7 @@ shared/
   hit.ts              hit resolution against defense history
 scripts/
   copy-assets.mjs     copies MediaPipe WASM into client/public
+  audio-manifest.mjs  writes dist/client/audio-manifest.json at build time
   gen-audio.ts        optional ElevenLabs audio generation
   eval-*.ts           classifier evaluation on recorded fixtures (eval-core.ts is shared with the tests)
   dump-segments.ts    prints motion segment features
