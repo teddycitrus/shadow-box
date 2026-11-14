@@ -1,0 +1,326 @@
+import * as THREE from 'three';
+import { RULES } from '../../../shared/rules.ts';
+import { other, type DefenseState, type LobbyPlayer, type MatchEvent, type MatchSnapshot, type Slot, type Stance, type WirePose } from '../../../shared/types.ts';
+import { sound } from '../audio/sound.ts';
+import { CONFIG } from '../config.ts';
+import type { MatchLink } from '../net/link.ts';
+import { ProceduralAvatar, type Avatar } from '../scene/avatar.ts';
+import { FirstPersonGloves, Sparks } from '../scene/fp.ts';
+import { Stage } from '../scene/stage.ts';
+import { KEY_HELP, type InputSource } from '../tracking/input.ts';
+import { commonEvent } from '../ui/announce.ts';
+import { button, flag, go, h } from '../ui/dom.ts';
+import { Hud } from '../ui/hud.ts';
+import { WebcamBox } from '../ui/webcam.ts';
+
+const EYE = new THREE.Vector3(0, 1.58, 0.8);
+const OPP_Z = -0.95;
+
+export interface PlayerOptions {
+  practice: boolean;
+  code?: string;
+}
+
+/** First-person fight view for a player, used by both practice and online matches. */
+export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSource, opts: PlayerOptions): { setSlot(s: Slot | null): void } {
+  let mySlot: Slot = link.slot ?? 0;
+  const names = (): [string, string] => {
+    const n: [string, string] = ['Red', 'Blue'];
+    n[mySlot] = 'You';
+    n[other(mySlot)] = opts.practice ? 'Bot' : 'Opponent';
+    return n;
+  };
+
+  const host = h('div', { class: 'stage' });
+  app.append(host);
+  const stage = new Stage(host);
+  const hud = new Hud(names());
+  app.append(hud.root);
+
+  const opp: Avatar = new ProceduralAvatar('blue');
+  opp.object.position.set(0, 0, OPP_Z);
+  stage.scene.add(opp.object);
+  const gloves = new FirstPersonGloves();
+  stage.camera.add(gloves.object);
+  const sparks = new Sparks();
+  stage.scene.add(sparks.object);
+  stage.camera.position.copy(EYE);
+  stage.camera.lookAt(0, 1.4, OPP_Z);
+
+  const keysHelp = h('div', { class: 'keyhelp' }, ...KEY_HELP.map(([k, v]) => h('div', {}, h('kbd', {}, k), ' ', v)));
+  const webcam = new WebcamBox(input.video, input.kind === 'keys' ? keysHelp : undefined);
+  app.append(webcam.root);
+
+  // Lobby / setup panel.
+  let stance: Stance = 'orthodox';
+  let ready = false;
+  const status = h('div', { class: 'calib-msg' }, 'Starting camera...');
+  const progress = h('div', { class: 'progress' }, h('i'));
+  const readyBtn = button('Ready', () => {
+    ready = !ready;
+    sound.unlock();
+    sound.startCrowd();
+    sendReady();
+  }, 'primary');
+  const stanceBtn = button('Stance: Orthodox', () => {
+    stance = stance === 'orthodox' ? 'southpaw' : 'orthodox';
+    stanceBtn.textContent = `Stance: ${stance === 'orthodox' ? 'Orthodox' : 'Southpaw'}`;
+    input.stance = stance;
+    sendReady();
+  });
+  const recal = button('Recalibrate', () => {
+    input.recalibrate();
+    ready = false;
+    sendReady();
+  });
+  const players = h('div', { class: 'players' });
+  const share = h('div', { class: 'share' });
+  if (opts.code) {
+    const playUrl = `${location.origin}/play/${opts.code}`;
+    const watchUrl = `${location.origin}/watch/${opts.code}`;
+    const copyRow = (label: string, url: string) => {
+      const field = h('input', { value: url, readonly: '' });
+      return h('div', { class: 'copyrow' }, h('span', {}, label), field, button('Copy', () => void navigator.clipboard.writeText(url)));
+    };
+    share.append(h('div', { class: 'code' }, opts.code), copyRow('Opponent link', playUrl), copyRow('Watch link', watchUrl));
+  }
+  const lobby = h('div', { class: 'panel lobby' },
+    h('h2', {}, opts.practice ? 'Practice' : 'Fight lobby'),
+    share,
+    h('div', { class: 'calib' }, status, progress),
+    players,
+    h('div', { class: 'row' }, stanceBtn, input.kind === 'camera' ? recal : null, readyBtn),
+    h('p', { class: 'hint' }, input.kind === 'keys'
+      ? 'Keyboard mode. Press Ready to start.'
+      : 'Laptop at chest height, 1.5 to 2 m away, light in front of you. Hold your guard for 2 seconds to calibrate.'),
+    button('Back to title', () => go('/'), 'ghost'),
+  );
+  app.append(lobby);
+
+  const endPanel = h('div', { class: 'panel end' });
+  app.append(endPanel);
+
+  const debug = flag('debug') ? h('pre', { class: 'debug' }) : null;
+  if (debug) app.append(debug);
+  const rec = flag('record') ? recorder(input) : null;
+  if (rec) app.append(rec.el);
+
+  function sendReady(): void {
+    link.ready(ready, input.calibrated, stance);
+    readyBtn.textContent = ready ? 'Waiting...' : 'Ready';
+    readyBtn.classList.toggle('on', ready);
+  }
+
+  // Input to link.
+  let lastDef: DefenseState | null = null;
+  let lastPoseAt = 0;
+  input.onTick = (t) => {
+    const now = performance.now();
+    if (t.pose) {
+      gloves.setPose(t.pose, input.gassed);
+      if (now - lastPoseAt >= 1000 / CONFIG.network.poseHz) {
+        lastPoseAt = now;
+        link.pose(t.pose);
+      }
+    }
+    if (!lastDef || lastDef.guard !== t.defense.guard || lastDef.duck !== t.defense.duck || lastDef.slip !== t.defense.slip) {
+      lastDef = t.defense;
+      link.defense(t.defense, now);
+    }
+    for (const p of t.punches) link.punch({ type: p.type, hand: p.hand, target: p.target }, p.at);
+    rec?.push();
+  };
+
+  // Link to view.
+  let snap: MatchSnapshot | null = null;
+  let hitStopUntil = 0;
+  let pendingPose: WirePose | null = null;
+  let shake = 0;
+  let downK = 0;
+  let wasCalibrated = false;
+  const tmp = new THREE.Vector3();
+
+  link.handlers = {
+    lobby(ps: [LobbyPlayer | null, LobbyPlayer | null], spectators: number) {
+      players.replaceChildren(...ps.map((p, i) => {
+        const who = i === mySlot ? 'You' : opts.practice ? 'Bot' : 'Opponent';
+        const st = !p ? 'waiting to join' : !p.connected ? 'disconnected' : p.ready ? 'ready' : p.calibrated ? 'calibrated' : 'calibrating';
+        return h('div', { class: `pl ${i ? 'blue' : 'red'} ${p?.ready ? 'ok' : ''}` }, h('b', {}, `${i ? 'Blue' : 'Red'}: ${who}`), h('span', {}, st));
+      }), spectators ? h('div', { class: 'spec' }, `${spectators} watching`) : '');
+    },
+    state(s, rejoinMs) {
+      const first = !snap || snap.phase === 'lobby' || snap.phase === 'ended';
+      snap = s;
+      hud.setState(s);
+      const me = s.fighters[mySlot];
+      const oppF = s.fighters[other(mySlot)];
+      input.gassed = me.gassed;
+      input.canPunch = s.phase === 'round' && !s.paused && me.status === 'up' && !me.exhausted;
+      opp.setGassed(oppF.gassed);
+      const fighting = s.phase !== 'lobby' && s.phase !== 'ended';
+      document.body.classList.toggle('fighting', fighting || s.phase === 'ended');
+      if (fighting && first) endPanel.classList.remove('on');
+      if (me.status === 'down') hud.setSub(`Hold your guard to get up  ${Math.round(me.getUpProgress * 100)}%`);
+      else if (s.paused) hud.setSub(`Opponent disconnected. Waiting ${Math.ceil((rejoinMs ?? 0) / 1000)} s for them to rejoin.`);
+      else if (me.exhausted && s.phase === 'round') hud.setSub('Exhausted. Breathe and hold your guard.');
+      else if (s.phase === 'break') hud.setSub(`Rest. Round ${s.round + 1} in ${Math.ceil(s.clockMs / 1000)}`);
+      else hud.setSub('');
+    },
+    pose(slot, p) {
+      if (slot === mySlot) return;
+      if (performance.now() < hitStopUntil) pendingPose = p;
+      else opp.setPose(p);
+    },
+    event(ev: MatchEvent) {
+      onEvent(ev);
+    },
+    telegraph(slot, hand, k) {
+      if (slot !== mySlot) opp.setTelegraph(hand, k);
+    },
+  };
+
+  function onEvent(ev: MatchEvent): void {
+    commonEvent(ev, hud, names(), stage.scene);
+    const oppSlot = other(mySlot);
+    switch (ev.e) {
+      case 'land':
+        if (ev.attacker === mySlot) {
+          if (ev.outcome === 'hit' || ev.outcome === 'block') {
+            opp.playReaction({ kind: ev.outcome, zone: ev.zone, heavy: ev.damage >= 9 });
+            sparks.spawn(opp.zonePosition(ev.zone, tmp), ev.outcome === 'hit' ? 0xffd27a : 0x9fc6ff, ev.outcome === 'hit' ? 45 : 15);
+            if (ev.outcome === 'hit') hitStopUntil = performance.now() + 60;
+          }
+          if (ev.stagger) opp.playReaction({ kind: 'stagger' });
+        } else if (ev.outcome === 'hit' || ev.outcome === 'block') {
+          const heavy = ev.outcome === 'hit' && ev.damage >= 9;
+          if (ev.outcome === 'hit') hud.flash(ev.zone.endsWith('left') ? 'left' : 'right', heavy);
+          hud.marker(ev.zone, ev.outcome);
+          shake = Math.max(shake, ev.outcome === 'hit' ? (heavy ? 0.06 : 0.035) : 0.012);
+          if (ev.stagger) shake = 0.1;
+        }
+        break;
+      case 'knockdown':
+        if (ev.slot === oppSlot) opp.playReaction({ kind: 'knockdown' });
+        break;
+      case 'getUp':
+        if (ev.slot === oppSlot) opp.playReaction({ kind: 'getUp' });
+        break;
+      case 'matchEnd': {
+        const won = ev.result.winner === mySlot;
+        endPanel.replaceChildren(
+          h('h2', {}, ev.result.winner === null ? 'Draw' : won ? 'You win' : 'You lose'),
+          h('div', { class: 'row' },
+            opts.practice ? button('Fight again', () => location.reload(), 'primary') : button('Rematch', () => {
+              ready = true;
+              sendReady();
+              endPanel.querySelector('h2')!.textContent = 'Waiting for opponent...';
+            }, 'primary'),
+            button('Title', () => go('/'), 'ghost')),
+        );
+        endPanel.classList.add('on');
+        break;
+      }
+    }
+  }
+
+  stage.onUpdate((dt, t) => {
+    hud.tick();
+    if (performance.now() >= hitStopUntil) {
+      if (pendingPose) {
+        opp.setPose(pendingPose);
+        pendingPose = null;
+      }
+      opp.update(dt);
+    }
+    gloves.update(dt);
+    sparks.update(dt);
+
+    const me = snap?.fighters[mySlot];
+    const down = me?.status === 'down' ? 1 : 0;
+    downK += (down - downK) * Math.min(1, dt * (down ? 2.5 : 1.5));
+    shake *= Math.exp(-dt * 9);
+    const cam = stage.camera;
+    cam.position.set(
+      EYE.x + (Math.random() - 0.5) * shake + Math.sin(t * 1.3) * 0.01,
+      EYE.y - downK * 1.1 + (Math.random() - 0.5) * shake + Math.sin(t * 2.1) * 0.006,
+      EYE.z + downK * 0.4,
+    );
+    cam.lookAt(0, 1.32 + downK * 1.6, OPP_Z);
+    gloves.object.visible = downK < 0.5;
+
+    if (input.kind === 'camera') {
+      const s = input.status;
+      const good = input.calibrated;
+      webcam.draw(input.frame, input.video, good);
+      if (!good && s) {
+        status.textContent = s.stage === 'framing' ? s.message : s.stage === 'hold' ? s.message : 'Calibrated';
+        (progress.firstChild as HTMLElement).style.width = `${s.stage === 'hold' ? s.progress * 100 : 0}%`;
+      } else if (good) {
+        status.textContent = 'Calibrated. Throw a few punches to check tracking.';
+        (progress.firstChild as HTMLElement).style.width = '100%';
+      }
+      if (good !== wasCalibrated) {
+        wasCalibrated = good;
+        if (!good) ready = false;
+        sendReady();
+      }
+    } else if (!wasCalibrated) {
+      wasCalibrated = true;
+      status.textContent = 'Keyboard mode';
+      sendReady();
+    }
+    readyBtn.toggleAttribute('disabled', !input.calibrated);
+    if (debug) debug.textContent = debugText(input, snap);
+  });
+
+  function setSlot(s: Slot | null): void {
+    if (s === null) return;
+    mySlot = s;
+    opp.setCornerColor(s === 0 ? 'blue' : 'red');
+    gloves.setCorner(s === 0 ? 'red' : 'blue');
+    hud.setNames(names());
+  }
+  setSlot(mySlot);
+  return { setSlot };
+}
+
+function debugText(input: InputSource, snap: MatchSnapshot | null): string {
+  const d = input.debug;
+  const r = (n: number) => n.toFixed(2);
+  const lines = [`input: ${input.kind}  calibrated: ${input.calibrated}  canPunch: ${input.canPunch}  gassed: ${input.gassed}`];
+  if (d?.features) {
+    for (const hand of ['left', 'right'] as const) {
+      const f = d.features[hand];
+      lines.push(`${hand.padEnd(5)} reach ${r(f.reach)} elbow ${f.elbow.toFixed(0).padStart(3)} z ${r(f.zAhead)} scale ${r(f.scale)} y ${r(f.y)} head ${r(f.headDist)} v(f/in/up) ${r(f.vFwd)} ${r(f.vIn)} ${r(f.vUp)}`);
+    }
+    lines.push(`head dx ${r(d.features.headDx)} dy ${r(d.features.headDy)}  defense ${JSON.stringify(d.defense)}`);
+    lines.push(`last: ${d.last ?? '-'}`);
+  }
+  if (snap) lines.push(`phase ${snap.phase} round ${snap.round} hp ${snap.fighters.map((f) => f.hp).join('/')} st ${snap.fighters.map((f) => f.stamina.toFixed(0)).join('/')} max ${RULES.maxHp}`);
+  return lines.join('\n');
+}
+
+/** ?record=1: captures raw frames to JSON for classifier test fixtures. */
+function recorder(input: InputSource): { el: HTMLElement; push(): void } {
+  let frames: unknown[] = [];
+  let on = false;
+  const label = h('span', {}, '0 frames');
+  const toggle = button('Record', () => {
+    on = !on;
+    if (on) frames = [];
+    toggle.textContent = on ? 'Stop' : 'Record';
+  });
+  const save = button('Save JSON', () => {
+    const blob = new Blob([JSON.stringify({ calibration: input.calibration, frames, expected: [] })], { type: 'application/json' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: `pose-${Date.now()}.json` });
+    a.click();
+  });
+  return {
+    el: h('div', { class: 'panel recorder' }, toggle, save, label),
+    push() {
+      if (!on || !input.frame) return;
+      frames.push(input.frame);
+      label.textContent = `${frames.length} frames`;
+    },
+  };
+}

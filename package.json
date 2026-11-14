@@ -14,21 +14,21 @@
     "tunnel": "cloudflared tunnel --url http://localhost:3000",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "gen-audio": "tsx scripts/gen-audio.ts"
+    "gen:audio": "tsx scripts/gen-audio.ts"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^1.2.2",
-    "three": "^0.187.0",
-    "ws": "^8.22.1"
+    "@mediapipe/tasks-vision": "1.2.2",
+    "three": "0.187.0",
+    "ws": "8.22.1"
   },
   "devDependencies": {
-    "@types/node": "^24.19.2",
-    "@types/three": "^0.187.0",
-    "@types/ws": "^8.18.2",
-    "concurrently": "^10.0.6",
-    "tsx": "^4.23.15",
-    "typescript": "^6.0.3",
-    "vite": "^8.3.6",
-    "vitest": "^5.1.0"
+    "@types/node": "24.19.2",
+    "@types/three": "0.187.0",
+    "@types/ws": "8.18.2",
+    "concurrently": "10.0.6",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vite": "8.3.6",
+    "vitest": "5.1.0"
   }
 }
