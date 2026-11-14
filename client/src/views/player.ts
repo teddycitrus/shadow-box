@@ -287,7 +287,8 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
 function debugText(input: InputSource, snap: MatchSnapshot | null): string {
   const d = input.debug;
   const r = (n: number) => n.toFixed(2);
-  const lines = [`input: ${input.kind}  calibrated: ${input.calibrated}  canPunch: ${input.canPunch}  gassed: ${input.gassed}`];
+  const lines = [`input: ${input.kind} (${input.stats})  calibrated: ${input.calibrated}  stance: ${input.stance}  canPunch: ${input.canPunch}  gassed: ${input.gassed}`];
+  if (!input.calibrated && input.status) lines.push(`calibration: ${input.status.stage} ${'message' in input.status ? input.status.message : ''}`);
   if (d?.features) {
     for (const hand of ['left', 'right'] as const) {
       const f = d.features[hand];

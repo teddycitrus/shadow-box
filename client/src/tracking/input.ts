@@ -23,6 +23,7 @@ export interface InputSource {
   readonly debug: ClassifierOutput | null;
   readonly calibration: Calibration | null;
   readonly video: HTMLVideoElement | null;
+  readonly stats: string;
   onTick: (t: InputTick) => void;
   start(): Promise<void>;
   recalibrate(): void;
@@ -56,6 +57,10 @@ export class CameraInput implements InputSource {
 
   get video(): HTMLVideoElement {
     return this.tracker.video;
+  }
+
+  get stats(): string {
+    return `${this.tracker.delegate ?? 'loading'} ${this.tracker.fps} fps`;
   }
 
   async start(): Promise<void> {
@@ -116,6 +121,7 @@ export class KeyInput implements InputSource {
   readonly debug = null;
   readonly calibration = null;
   readonly video = null;
+  readonly stats = 'keyboard';
   onTick: (t: InputTick) => void = () => {};
   private held = new Set<string>();
   private punches: Record<Hand, SynthPunch | null> = { left: null, right: null };

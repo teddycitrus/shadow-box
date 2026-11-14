@@ -9,7 +9,16 @@ export class PoseTracker {
   private landmarker: PoseLandmarker | null = null;
   private lastVideoTime = -1;
   private running = false;
+  private frameTimes: number[] = [];
+  delegate: 'GPU' | 'CPU' | null = null;
   onFrame: (f: PoseFrame | null) => void = () => {};
+
+  /** Tracked frames per second over the last second. */
+  get fps(): number {
+    const now = performance.now();
+    this.frameTimes = this.frameTimes.filter((t) => now - t < 1000);
+    return this.frameTimes.length;
+  }
 
   async start(): Promise<void> {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -31,8 +40,10 @@ export class PoseTracker {
     });
     try {
       this.landmarker = await PoseLandmarker.createFromOptions(fileset, opts('GPU'));
+      this.delegate = 'GPU';
     } catch {
       this.landmarker = await PoseLandmarker.createFromOptions(fileset, opts('CPU'));
+      this.delegate = 'CPU';
     }
     this.running = true;
     this.loop();
@@ -45,6 +56,7 @@ export class PoseTracker {
     if (!this.landmarker || v.readyState < 2 || v.currentTime === this.lastVideoTime) return;
     this.lastVideoTime = v.currentTime;
     const t = performance.now();
+    this.frameTimes.push(t);
     const res = this.landmarker.detectForVideo(v, t);
     const img = res.landmarks[0];
     const world = res.worldLandmarks[0];
