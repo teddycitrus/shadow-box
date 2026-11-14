@@ -12,6 +12,7 @@ import { commonEvent } from '../ui/announce.ts';
 import { button, flag, go, h } from '../ui/dom.ts';
 import { Hud } from '../ui/hud.ts';
 import { tuner } from '../ui/tuner.ts';
+import type { SessionLog } from '../tracking/session.ts';
 import { WebcamBox } from '../ui/webcam.ts';
 
 const EYE = new THREE.Vector3(0, 1.58, 0.8);
@@ -113,6 +114,14 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
 
   const debug = flag('debug') ? h('pre', { class: 'debug' }) : null;
   if (debug) app.append(debug);
+  const log = 'log' in input ? (input as { log: SessionLog | null }).log : null;
+  const saveNote = h('span', { class: 'save-note' });
+  const saveSession = async (label: string) => {
+    saveNote.textContent = 'Saving...';
+    const name = await log?.save(label, { stance: input.stance, learned: input.learned });
+    saveNote.textContent = name ? `Saved ${name}` : 'Save failed';
+  };
+  if (log) app.append(h('div', { class: 'panel sessionbar' }, button('Save session', () => void saveSession('play')), saveNote));
   const rec = flag('record') ? tuner(input) : null;
   if (rec) {
     app.append(rec.el);
@@ -220,6 +229,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
         if (ev.slot === oppSlot) opp.playReaction({ kind: 'getUp' });
         break;
       case 'matchEnd': {
+        if (log) void saveSession('match');
         const won = ev.result.winner === mySlot;
         endPanel.replaceChildren(
           h('h2', {}, ev.result.winner === null ? 'Draw' : won ? 'You win' : 'You lose'),

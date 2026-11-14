@@ -75,6 +75,7 @@ interface HandState {
   active: Active | null;
   lastFire: number;
   lastMotion: number;
+  lastIgnored: number;
   /** The last frame before the hand started moving fast, used as the segment start. */
   rest: { t: number; f: HandFeatures; img: Lm; z: number } | null;
   prev: { img: Lm; z: number; t: number } | null;
@@ -101,6 +102,11 @@ export class Classifier {
   canPunch = true;
   /** Called for every completed motion, punch or not. */
   onSegment?: (s: Segment) => void;
+  /** Called with every motion and what was decided for it (debug logging). */
+  onDecision?: (s: Segment, p: Punch | null, why: string) => void;
+  private lastSeg: Segment | null = null;
+  /** Called when a locked hand moves fast and the motion is ignored (debug logging). */
+  onIgnored?: (hand: Hand, t: number, why: string) => void;
   /** Optional learned decision; returning undefined falls back to the rules. */
   model?: (s: Segment) => Punch | null | undefined;
   private hands: Record<Hand, HandState> = { left: newHand(), right: newHand() };
@@ -206,6 +212,10 @@ export class Classifier {
     if (st.mode === 'locked') {
       const home = f.headDist < c.returnHeadDist && f.y < c.returnMaxY;
       if (home && t - st.lastFire >= cooldown) st.mode = 'ready';
+      else if (f.speed >= c.startSpeed && t - st.lastIgnored > 300) {
+        st.lastIgnored = t;
+        this.onIgnored?.(hand, t, home ? 'cooldown' : `not back in guard (head ${f.headDist.toFixed(2)}, y ${f.y.toFixed(2)})`);
+      }
       return null;
     }
     if (st.mode === 'ready') {
@@ -236,6 +246,7 @@ export class Classifier {
     st.active = null;
     st.rest = null;
     const punch = this.classify(hand, a, chinY, sw, t);
+    if (this.lastSeg) this.onDecision?.(this.lastSeg, punch, `${this.lastDecision ?? ''}${punch && !this.canPunch ? ' (blocked: cannot punch now)' : ''}`);
     if (!punch || !this.canPunch) {
       st.mode = 'ready';
       return null;
@@ -268,6 +279,7 @@ export class Classifier {
       startHead: a.start.headDist, peakHead: pf.headDist, scaleGain: pf.scale - a.start.scale,
       travel: p.travel, maxSpeed: a.maxSpeed, maxUp: a.maxUp, reach: pf.reach, startReach: a.start.reach,
     };
+    this.lastSeg = seg;
     this.onSegment?.(seg);
     if (!passesGate(seg)) {
       this.lastDecision = `none (${seg.travel < CONFIG.punch.minTravel ? 'short' : 'arm did not extend'}) ${info}`;
@@ -313,7 +325,7 @@ export function ruleDecision(seg: Segment, stance: Stance): Punch | null {
 }
 
 function newHand(): HandState {
-  return { mode: 'ready', active: null, lastFire: -Infinity, lastMotion: -Infinity, rest: null, prev: null };
+  return { mode: 'ready', active: null, lastFire: -Infinity, lastMotion: -Infinity, lastIgnored: -Infinity, rest: null, prev: null };
 }
 
 function clone(f: PoseFrame): PoseFrame {

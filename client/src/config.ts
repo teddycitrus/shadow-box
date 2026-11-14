@@ -78,6 +78,9 @@ export const CONFIG = {
   /** Per-player learned classifier, trained by the guided calibration. */
   model: {
     k: 3,
+    /** Reject a motion when it is further from its nearest taught punch than this multiple of the
+     *  typical spacing between taught reps of the same punch. */
+    rejectScale: 2,
     repsPerMove: 3,
     moveTimeoutMs: 9_000,
     /** Duck and slip thresholds as a fraction of the player's own demonstrated depth. */

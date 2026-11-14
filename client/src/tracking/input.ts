@@ -1,6 +1,7 @@
 import { NO_DEFENSE, WIRE_LANDMARKS, type DefenseState, type Hand, type Punch, type PunchType, type Stance, type WirePose } from '../../../shared/types.ts';
 import { Calibrator, looksLikeGuard, type Calibration, type CalibrationStatus } from './calibration.ts';
 import { Classifier, type ClassifierOutput } from './classifier.ts';
+import { SessionLog } from './session.ts';
 import { Teacher, modelFrom, type Profile, type TeachStatus } from './teach.ts';
 import type { Lm, PoseFrame } from './frame.ts';
 import { PoseTracker } from './pose.ts';
@@ -65,6 +66,10 @@ export class CameraInput implements InputSource {
   private teacher: Teacher | null = null;
   teach: TeachStatus | null = null;
   learned: string[] = [];
+  /** Dev-only session recording, enabled with ?debug=1 on the Vite dev server. */
+  readonly log: SessionLog | null = import.meta.env.DEV && new URLSearchParams(location.search).get('debug') === '1' ? new SessionLog() : null;
+  private lastTeachIndex = -1;
+  private lastDefenseKey = '';
 
   get calibrated(): boolean {
     return this.classifier !== null && this.teacher === null;
@@ -94,6 +99,8 @@ export class CameraInput implements InputSource {
   reteach(): void {
     if (!this.classifier) return;
     this.teacher = new Teacher(this.stance);
+    this.lastTeachIndex = -1;
+    this.log?.mark(performance.now(), 'teachStart');
     const c = this.classifier;
     c.model = () => null;
     c.onSegment = (seg) => this.teacher?.segment(seg);
@@ -121,11 +128,18 @@ export class CameraInput implements InputSource {
 
   private handle(f: PoseFrame | null): void {
     this.frame = f;
+    if (f) this.log?.frame(f);
     if (!this.classifier) {
       this.status = this.calibrator.update(f);
       if (this.status.stage === 'done') {
         this.calibration = this.status.cal;
         this.classifier = new Classifier(this.status.cal);
+        if (this.log) {
+          this.log.calibration = this.status.cal;
+          this.log.mark(f?.t ?? 0, 'calibrated', this.status.cal);
+          this.classifier.onDecision = (seg, p, why) => this.log!.mark(seg.endT, 'decision', { seg, punch: p, why });
+          this.classifier.onIgnored = (hand, t, why) => this.log!.mark(t, 'ignored', { hand, why });
+        }
         const saved = localStorage.getItem(PROFILE_KEY);
         if (saved) this.apply(JSON.parse(saved) as Profile);
         else this.reteach();
@@ -147,14 +161,28 @@ export class CameraInput implements InputSource {
     const feat = out.features!;
     if (this.teacher) {
       this.teach = this.teacher.update(f.t, feat);
+      if (this.teach.index !== this.lastTeachIndex) {
+        this.lastTeachIndex = this.teach.index;
+        this.log?.mark(f.t, 'teachStep', this.teach.step);
+      }
       if (this.teach.done) {
         const p = this.teacher.profile();
+        this.log?.mark(f.t, 'teachDone', { learned: p.learned, defense: p.defense });
+        void this.log?.save('teach', { stance: this.stance, profile: p });
         localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
         this.teacher = null;
         this.apply(p);
       }
       this.onTick({ pose: toWire(f.world, [feat.headDx, feat.headDy]), defense: out.defense, punches: [] });
       return;
+    }
+    if (this.log) {
+      for (const p of out.punches) this.log.mark(f.t, 'punch', p);
+      const key = JSON.stringify(out.defense);
+      if (key !== this.lastDefenseKey) {
+        this.lastDefenseKey = key;
+        this.log.mark(f.t, 'defense', out.defense);
+      }
     }
     this.onTick({ pose: toWire(f.world, [feat.headDx, feat.headDy]), defense: out.defense, punches: out.punches });
   }

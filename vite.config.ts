@@ -9,7 +9,7 @@ const fixtureWriter: Plugin = {
   configureServer(server) {
     server.middlewares.use('/__fixtures/', (req, res) => {
       const name = decodeURIComponent((req.url ?? '').slice(1));
-      if (req.method !== 'POST' || !/^[\w.-]+\.json$/.test(name)) {
+      if (req.method !== 'POST' || !/^(sessions\/)?[\w-][\w.-]*\.json$/.test(name) || name.includes('..')) {
         res.statusCode = 400;
         res.end();
         return;
@@ -17,7 +17,7 @@ const fixtureWriter: Plugin = {
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
-        mkdirSync('tests/fixtures', { recursive: true });
+        mkdirSync(name.startsWith('sessions/') ? 'tests/fixtures/sessions' : 'tests/fixtures', { recursive: true });
         writeFileSync(`tests/fixtures/${name}`, Buffer.concat(chunks));
         res.end('ok');
       });

@@ -7,3 +7,4 @@ client/public/mediapipe/
 recordings/
 .claude/
 *.log
+tests/fixtures/sessions/

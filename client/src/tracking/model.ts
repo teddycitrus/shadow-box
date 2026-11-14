@@ -1,4 +1,5 @@
 import type { Hand, Punch, PunchType, Target } from '../../../shared/types.ts';
+import { CONFIG } from '../config.ts';
 import type { Segment } from './classifier.ts';
 
 /** `none` marks motions that are not punches (returning to guard, adjusting, retracting). */
@@ -33,8 +34,10 @@ export class KnnModel {
   private mean: number[] = [];
   private std: number[] = [];
   private data: Sample[];
+  /** Motions further than this from every taught punch are rejected as non-punches. */
+  readonly radius: number;
 
-  constructor(samples: Sample[], private k = 3) {
+  constructor(samples: Sample[], private k = 3, rejectScale = CONFIG.model.rejectScale) {
     const n = samples[0]?.v.length ?? 0;
     for (let i = 0; i < n; i++) {
       const col = samples.map((s) => s.v[i]);
@@ -44,6 +47,13 @@ export class KnnModel {
       this.std.push(sd);
     }
     this.data = samples.map((s) => ({ ...s, v: this.norm(s.v) }));
+    const d = (a: number[], b: number[]) => Math.hypot(...a.map((x, i) => x - b[i]));
+    const nn = this.data
+      .filter((s) => s.label !== 'none')
+      .map((s) => Math.min(...this.data.filter((o) => o !== s && o.label === s.label).map((o) => d(o.v, s.v))))
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    this.radius = nn.length ? Math.max(1.5, nn[Math.floor(nn.length / 2)] * rejectScale) : Infinity;
   }
 
   private norm(v: number[]): number[] {
@@ -60,8 +70,10 @@ export class KnnModel {
     if (!near.length) return { label: 'none', votes: 0, dist: Infinity };
     const score = new Map<Label, number>();
     for (const { s, d } of near) score.set(s.label, (score.get(s.label) ?? 0) + 1 / (d + 0.3));
-    const [label] = [...score.entries()].sort((a, b) => b[1] - a[1])[0];
-    return { label, votes: near.filter((x) => x.s.label === label).length, dist: near[0].d };
+    const [best] = [...score.entries()].sort((a, b) => b[1] - a[1])[0];
+    const nearestOfBest = near.find((x) => x.s.label === best)!.d;
+    const label: Label = best !== 'none' && nearestOfBest > this.radius ? 'none' : best;
+    return { label, votes: near.filter((x) => x.s.label === best).length, dist: nearestOfBest };
   }
 
   /** Classifier hook: a punch, null for a non-punch, or undefined to defer to the rules. */
