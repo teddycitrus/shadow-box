@@ -45,7 +45,7 @@ function howTo(): HTMLElement {
     ),
     h('h3', {}, 'Defense'),
     h('ul', {},
-      h('li', {}, h('b', {}, 'High guard: '), 'both gloves up by your face. Blocks with a little chip damage.'),
+      h('li', {}, h('b', {}, 'High guard: '), 'both gloves up by your face. Blocks most of the damage, but holding it and absorbing hits drains stamina.'),
       h('li', {}, h('b', {}, 'Duck: '), 'drop your head well down. Dodges head shots.'),
       h('li', {}, h('b', {}, 'Slip: '), 'move your head to the side. Slip away from a straight to dodge it.'),
     ),
@@ -66,7 +66,7 @@ function title(): void {
     if (/^[A-Z]{4}$/.test(c)) go(`/play/${c}`);
   };
   code.addEventListener('keydown', (e) => e.key === 'Enter' && join());
-  app.append(h('div', { class: 'title' },
+  app.append(h('div', { class: 'scrim' }), h('div', { class: 'title' },
     h('h1', {}, 'Shadow', h('span', {}, 'Box')),
     h('div', { class: 'menu' },
       button('Create match', () => go('/create'), 'primary'),

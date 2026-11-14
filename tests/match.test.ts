@@ -80,6 +80,16 @@ describe('match flow', () => {
     expect(m.snapshot().clockMs).toBe(RULES.roundMs - 2000);
   });
 
+  it('keeps defense changes made while paused', () => {
+    const { m, t } = started();
+    m.setDefense(1, { ...NO_DEFENSE, guard: true }, t, t);
+    m.pause(t + 500, 'disconnect');
+    m.setDefense(1, NO_DEFENSE, t + 5_000, t + 5_000);
+    m.resume(t + 10_000);
+    hit(m, t + 10_000);
+    expect(m.fighters[1].hp).toBe(83.5);
+  });
+
   it('forfeit gives the win to the other player', () => {
     const { m } = started();
     m.forfeit(1);
@@ -101,10 +111,11 @@ describe('stamina', () => {
     m.fighters[1].stamina = 50;
     m.setDefense(1, { ...NO_DEFENSE, guard: true }, t, t);
     hit(m, t);
-    expect(m.fighters[1].stamina).toBeCloseTo(46 + 25 * 0.2, 1);
+    // 4 base + 0.8 per point of the 16.5 raw damage, plus 0.2 s of guard drain at 5/s.
+    expect(m.fighters[1].stamina).toBeCloseTo(50 - 4 - 16.5 * 0.8 - 5 * 0.2, 1);
   });
 
-  it('recovers 15/s after 0.6 s idle and 25/s with guard', () => {
+  it('recovers 15/s after 0.6 s idle, and holding guard drains 5/s', () => {
     const { m, t } = started();
     m.punch(0, upper, t, t);
     m.tick(t + 600);
@@ -114,7 +125,7 @@ describe('stamina', () => {
     m.fighters[0].stamina = 50;
     m.setDefense(0, { ...NO_DEFENSE, guard: true }, t + 1600, t + 1600);
     m.tick(t + 2600);
-    expect(m.fighters[0].stamina).toBeCloseTo(75, 1);
+    expect(m.fighters[0].stamina).toBeCloseTo(45, 1);
   });
 
   it('gassed punches do 0.6x damage', () => {

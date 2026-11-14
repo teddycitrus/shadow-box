@@ -53,9 +53,9 @@ describe('resolveHit', () => {
     const r = resolveHit({ punch: crossHead, peakAt: peak, attackerGassed: false, defense: hist() });
     expect(r).toMatchObject({ outcome: 'hit', damage: 10.5, stagger: false, zone: 'head-left' });
   });
-  it('guard blocks with 10% chip', () => {
+  it('guard blocks with 15% chip', () => {
     const r = resolveHit({ punch: upperHead, peakAt: peak, attackerGassed: false, defense: hist([900, { guard: true }]) });
-    expect(r).toMatchObject({ outcome: 'block', damage: 1.7, blocked: true });
+    expect(r).toMatchObject({ outcome: 'block', damage: 2.5, blocked: true });
   });
   it('guard raised 150 ms before the peak still counts, 151 ms does not', () => {
     const ok = resolveHit({ punch: jabHead, peakAt: peak, attackerGassed: false, defense: hist([0, { guard: true }], [851, {}]) });

@@ -1,4 +1,4 @@
-import { resolveHit, zoneFor, type DefenseSample } from './hit.ts';
+import { rawDamage, resolveHit, zoneFor, type DefenseSample } from './hit.ts';
 import { RULES, punchKind } from './rules.ts';
 import {
   NO_DEFENSE, other,
@@ -95,9 +95,10 @@ export class Match {
   }
 
   setDefense(slot: Slot, def: DefenseState, at: number, now: number): void {
-    if (this.paused) return;
     const f = this.fighters[slot];
-    const g = this.g(now);
+    // While paused, game time is frozen at the pause, so record the change there; dropping it
+    // would leave a stale guard in effect after the resume.
+    const g = this.g(this.paused ? this.pausedAt : now);
     const last = f.defense[f.defense.length - 1];
     const t = Math.max(last.at, Math.min(this.g(at), g));
     if (!def.guard) f.guardStart = null;
@@ -208,10 +209,12 @@ export class Match {
       }
       return;
     }
-    const idle = Math.min(dt, g - (f.lastPunchAt + RULES.recoverDelayMs));
-    if (idle > 0) {
-      const rate = guard ? RULES.guardRecoverPerSec : RULES.recoverPerSec;
-      f.stamina = Math.min(RULES.maxStamina, f.stamina + (rate * idle) / 1000);
+    if (guard) {
+      f.stamina = Math.max(0, f.stamina - (RULES.guardDrainPerSec * dt) / 1000);
+      if (f.stamina === 0) f.exhausted = true;
+    } else {
+      const idle = Math.min(dt, g - (f.lastPunchAt + RULES.recoverDelayMs));
+      if (idle > 0) f.stamina = Math.min(RULES.maxStamina, f.stamina + (RULES.recoverPerSec * idle) / 1000);
     }
     if (f.exhausted && f.stamina >= RULES.exhaustedResumeAt) f.exhausted = false;
   }
@@ -228,7 +231,8 @@ export class Match {
     }
     const r = resolveHit({ punch: p.punch, peakAt: p.peakAt, attackerGassed: p.gassed, defense: d.defense });
     if (r.blocked) {
-      d.stamina = Math.max(0, d.stamina - RULES.blockCost);
+      const raw = rawDamage(p.punch, p.gassed);
+      d.stamina = Math.max(0, d.stamina - (RULES.blockCost + raw * RULES.blockStaminaPerDamage));
       if (d.stamina === 0) d.exhausted = true;
     }
     d.hp = Math.max(0, Math.round((d.hp - r.damage) * 10) / 10);

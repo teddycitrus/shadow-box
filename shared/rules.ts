@@ -10,7 +10,8 @@ export const RULES = {
   damage: { jab: 4, cross: 7, hook: 9, uppercut: 11 } as Record<PunchKind, number>,
   headMultiplier: 1.5,
   gassedDamageMultiplier: 0.6,
-  chipFraction: 0.1,
+  /** A blocked punch still takes this fraction of its damage off HP. */
+  chipFraction: 0.15,
   staggerMinDamage: 12,
   staggerMs: 400,
 
@@ -23,10 +24,13 @@ export const RULES = {
 
   maxStamina: 100,
   punchCost: { jab: 6, cross: 10, hook: 12, uppercut: 14 } as Record<PunchKind, number>,
+  /** Blocking costs this much stamina plus blockStaminaPerDamage per point of the punch's damage. */
   blockCost: 4,
+  blockStaminaPerDamage: 0.8,
   recoverDelayMs: 600,
   recoverPerSec: 15,
-  guardRecoverPerSec: 25,
+  /** Holding guard does not recover stamina; it slowly drains it. */
+  guardDrainPerSec: 5,
   gassedBelow: 30,
   exhaustedResumeAt: 20,
 

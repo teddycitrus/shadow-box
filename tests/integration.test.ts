@@ -135,10 +135,10 @@ test('two clients play a match to a KO over the websocket', async () => {
   since = mark(a);
   punch();
   land = await event(a, (e) => e.e === 'land', 2_000, since);
-  expect(land.ev).toMatchObject({ outcome: 'block', damage: 1.7 });
+  expect(land.ev).toMatchObject({ outcome: 'block', damage: 2.5 });
   s = await stateAfter(a, land.i);
-  expect(s.fighters[1].hp).toBe(81.8);
-  expect(s.fighters[1].stamina).toBeLessThanOrEqual(RULES.maxStamina - RULES.blockCost + 1);
+  expect(s.fighters[1].hp).toBe(81);
+  expect(s.fighters[1].stamina).toBeLessThanOrEqual(RULES.maxStamina - RULES.blockCost - 16.5 * RULES.blockStaminaPerDamage + 1);
   expect(pre - s.fighters[0].stamina).toBeCloseTo(COST, 0);
 
   defend(b, { guard: false });

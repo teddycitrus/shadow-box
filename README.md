@@ -52,11 +52,11 @@ All numbers come from `shared/rules.ts`.
 
 - **Format:** 3 rounds of 60 s, 8 s breaks, 3 s countdown. Each fighter has 100 HP. The round clock stops while someone is down.
 - **Damage:** jab 4, cross 7, hook 9, uppercut 11. Head shots deal x1.5.
-- **Guard** blocks any punch but still takes 10% chip damage, and each block costs the defender 4 stamina.
+- **Guard** blocks any punch but still takes 15% of its damage off HP, and each block costs the defender 4 stamina plus 0.8 per point of the punch's damage. Holding guard drains 5 stamina per second, so you cannot turtle forever.
 - **Duck** dodges head shots.
 - **Slip** dodges straights (jab and cross) when you slip away from the side the punch lands on. An attacker's right hand lands on your left, so slip right to dodge it, and vice versa.
 - **Stagger:** a clean head shot other than a jab that deals 12 or more staggers the defender.
-- **Stamina:** 100 max. Punches cost jab 6, cross 10, hook 12, uppercut 14. Recovery starts 600 ms after your last punch at 15 per second, or 25 per second while holding guard. Below 30 you are gassed: your punches deal x0.6 and your cooldown is longer. At 0 you are exhausted and cannot punch until you recover to 20.
+- **Stamina:** 100 max. Punches cost jab 6, cross 10, hook 12, uppercut 14. Recovery starts 600 ms after your last punch at 15 per second, but only while your guard is down. Below 30 you are gassed: your punches deal x0.6 and your cooldown is longer. At 0 you are exhausted and cannot punch until you recover to 20.
 - **Knockdown:** at 0 HP you go down and the referee counts one per second. Hold a steady guard to get up: 2 s after the first knockdown, 3.5 s after later ones. You come back with 30 HP (20 HP after the second knockdown) and 50 stamina, and are protected for 1.5 s after the 1.2 s get-up.
 - **KO:** still down at the 10 count.
 - **TKO:** the third knockdown ends the fight.
@@ -146,7 +146,7 @@ Hit resolution order (`shared/match.ts` and `shared/hit.ts`), first match wins:
 1. **Immune:** the defender is down, getting up or still protected after a get-up (or the attacker is no longer up). The punch whiffs.
 2. **Duck:** a head shot while the defender ducked at any moment in the window is dodged.
 3. **Slip:** a jab or cross while the defender slipped away from the landing side is dodged.
-4. **Guard:** a held guard blocks with 10% chip damage and costs the defender 4 stamina.
+4. **Guard:** a held guard blocks with 15% chip damage and costs the defender 4 stamina plus 0.8 per point of damage.
 5. **Clean hit:** full damage, x0.6 if the attacker was gassed when throwing. A head cross, hook or uppercut dealing 12 or more also staggers.
 
 The defense window is 150 ms before to 80 ms after the punch peak. Any defense held at any moment in that window counts.
