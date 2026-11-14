@@ -1,4 +1,5 @@
 import { NO_DEFENSE, WIRE_LANDMARKS, type DefenseState, type Hand, type Punch, type PunchType, type Stance, type WirePose } from '../../../shared/types.ts';
+import { CONFIG } from '../config.ts';
 import { Calibrator, looksLikeGuard, type Calibration, type CalibrationStatus } from './calibration.ts';
 import { Classifier, type ClassifierOutput } from './classifier.ts';
 import { SessionLog } from './session.ts';
@@ -40,7 +41,7 @@ export interface InputSource {
 }
 
 /** Bump when the feature vector changes so old profiles are not reused. */
-const PROFILE_KEY = 'shadowbox:profile:v2';
+const PROFILE_KEY = 'shadowbox:profile:v3';
 
 export const SW_METRES = 0.38;
 
@@ -120,7 +121,8 @@ export class CameraInput implements InputSource {
   private apply(p: Profile): void {
     const c = this.classifier!;
     const m = modelFrom(p);
-    c.model = m ? (seg) => m.decide(seg) : undefined;
+    const split = p.bodySplit ?? CONFIG.punch.headBodySplit;
+    c.model = m ? (seg) => m.decide(seg, this.stance, split) : undefined;
     c.onSegment = undefined;
     c.defenseThresholds = { ...p.defense };
     this.learned = p.learned;

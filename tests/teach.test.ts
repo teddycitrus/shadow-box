@@ -52,6 +52,7 @@ describe('guided calibration', () => {
   it('learns every punch it prompted', () => {
     expect(profile.learned).toHaveLength(8);
     expect(profile.samples.filter((s) => s.label !== 'none').length).toBe(24);
+    expect(profile.bodySplit).toBeGreaterThan(-1);
   });
 
   it('sets duck and slip thresholds from what the player showed', () => {
@@ -69,7 +70,7 @@ describe('guided calibration', () => {
     ];
     for (const [type, target] of cases) {
       const c = new Classifier(cal);
-      c.model = (s) => model.decide(s);
+      c.model = (s) => model.decide(s, 'orthodox', profile.bodySplit);
       const got: Punch[] = [];
       for (let k = 0; k < 900; k += DT) {
         got.push(...c.update(synthFrame({ t: k, defense: NO_DEFENSE, punch: { type, hand: handFor(type, 'orthodox'), target, startT: 100, windupMs: 80 } })).punches);

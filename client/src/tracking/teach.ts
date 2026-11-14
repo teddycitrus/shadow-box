@@ -1,7 +1,7 @@
 import type { Hand, PunchType, Stance, Target } from '../../../shared/types.ts';
 import { CONFIG } from '../config.ts';
 import { passesGate, type Features, type Segment } from './classifier.ts';
-import { KnnModel, vector, type Label, type Sample } from './model.ts';
+import { KnnModel, kindOf, vector, type Sample } from './model.ts';
 
 export interface TeachStep {
   id: string;
@@ -51,6 +51,8 @@ export interface Profile {
   samples: Sample[];
   defense: { duck: number; slipLeft: number; slipRight: number };
   learned: string[];
+  /** Wrist height at the peak (sw below the shoulder line) above which a punch is a body shot. */
+  bodySplit: number;
 }
 
 /**
@@ -66,6 +68,8 @@ export class Teacher {
   private samples: Sample[] = [];
   private learned: string[] = [];
   private extreme = { duck: 0, slipLeft: 0, slipRight: 0 };
+  /** Peak heights of the taught straights, to place this player's head/body line. */
+  private heights: { head: number[]; body: number[] } = { head: [], body: [] };
 
   constructor(private stance: Stance) {}
 
@@ -78,7 +82,8 @@ export class Teacher {
     const s = this.steps[this.i];
     if (!s || s.kind !== 'punch' || !passesGate(seg)) return;
     if (seg.hand === handFor(s.type!, this.stance) && this.reps < CONFIG.model.repsPerMove) {
-      this.samples.push({ hand: seg.hand, label: `${s.type}:${s.target}` as Label, v: vector(seg) });
+      this.samples.push({ hand: seg.hand, label: kindOf(s.type!), v: vector(seg) });
+      if (kindOf(s.type!) === 'straight') this.heights[s.target!].push(seg.peakY);
       this.reps++;
     } else {
       this.samples.push({ hand: seg.hand, label: 'none', v: vector(seg) });
@@ -122,8 +127,16 @@ export class Teacher {
         slipRight: pick(this.extreme.slipRight, d.slipShift),
       },
       learned: this.learned,
+      bodySplit: bodySplit(this.heights.head, this.heights.body),
     };
   }
+}
+
+/** Midway between the player's head and body straights; the default when either is missing. */
+export function bodySplit(head: number[], body: number[]): number {
+  const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+  if (!head.length || !body.length || mean(body) <= mean(head)) return CONFIG.punch.headBodySplit;
+  return (mean(head) + mean(body)) / 2;
 }
 
 export function modelFrom(profile: Profile): KnnModel | null {

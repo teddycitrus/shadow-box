@@ -29,7 +29,7 @@ A browser boxing game you play with your body. A webcam and MediaPipe pose track
 3. Teach your punches, about 60 s. An overlay on the webcam prompts 8 punches in turn: jab, cross, left hook, right hook, left uppercut, right uppercut, jab to the body, cross to the body. Throw each one 3 times, back to guard after each (a step moves on after 3 reps or 9 s). Then duck, slip left and slip right, 3.5 s each. Punches do not count during this step.
 4. Press Ready.
 
-The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v2`) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
+The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v3`) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
 
 ### Moves
 

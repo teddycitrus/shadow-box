@@ -1,9 +1,22 @@
-import type { Hand, Punch, PunchType, Target } from '../../../shared/types.ts';
+import type { Hand, Punch, PunchType, Stance, Target } from '../../../shared/types.ts';
 import { CONFIG } from '../config.ts';
 import type { Segment } from './classifier.ts';
 
-/** `none` marks motions that are not punches (returning to guard, adjusting, retracting). */
-export type Label = `${PunchType}:${Target}` | 'none';
+/**
+ * The model learns the punch shape per hand only; the hand and stance give the exact punch, and
+ * height gives head or body. `none` marks motions that are not punches (retracting, adjusting).
+ */
+export type Kind = 'straight' | 'hook' | 'uppercut';
+export type Label = Kind | 'none';
+
+export function kindOf(type: PunchType): Kind {
+  return type === 'jab' || type === 'cross' ? 'straight' : type.endsWith('Hook') ? 'hook' : 'uppercut';
+}
+
+export function punchOf(kind: Kind, hand: Hand, stance: Stance): PunchType {
+  if (kind === 'straight') return hand === (stance === 'orthodox' ? 'left' : 'right') ? 'jab' : 'cross';
+  return `${hand}${kind === 'hook' ? 'Hook' : 'Uppercut'}` as PunchType;
+}
 
 export interface Sample {
   hand: Hand;
@@ -23,7 +36,7 @@ export function vector(s: Segment): number[] {
 }
 
 export function labelOf(p: Punch | null): Label {
-  return p ? `${p.type}:${p.target}` : 'none';
+  return p ? kindOf(p.type) : 'none';
 }
 
 /**
@@ -76,11 +89,14 @@ export class KnnModel {
     return { label, votes: near.filter((x) => x.s.label === best).length, dist: nearestOfBest };
   }
 
-  /** Classifier hook: a punch, null for a non-punch, or undefined to defer to the rules. */
-  decide(s: Segment): Punch | null | undefined {
+  /**
+   * Classifier hook: a punch, null for a non-punch, or undefined to defer to the rules.
+   * `bodySplit` is the wrist height (sw below the shoulder line) that separates body from head.
+   */
+  decide(s: Segment, stance: Stance, bodySplit: number): Punch | null | undefined {
     const { label } = this.predict(s.hand, vector(s));
     if (label === 'none') return null;
-    const [type, target] = label.split(':') as [PunchType, Target];
-    return { type, hand: s.hand, target };
+    const target: Target = label !== 'uppercut' && s.peakY > bodySplit ? 'body' : 'head';
+    return { type: punchOf(label, s.hand, stance), hand: s.hand, target };
   }
 }

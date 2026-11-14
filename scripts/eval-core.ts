@@ -5,7 +5,7 @@ import type { PunchType, Stance, Target } from '../shared/types.ts';
 import type { Calibration } from '../client/src/tracking/calibration.ts';
 import { Classifier, passesGate, type Segment } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
-import { KnnModel, vector, type Label, type Sample } from '../client/src/tracking/model.ts';
+import { KnnModel, kindOf, vector, type Label, type Sample } from '../client/src/tracking/model.ts';
 import { handFor } from '../client/src/tracking/teach.ts';
 
 export interface Recording {
@@ -50,7 +50,7 @@ export function labelledSegments(file: string, rec: Recording): LabelledSegment[
       if (picked.length >= (rec.reps ?? rec.expected!.length)) break;
       if (picked.every((p) => Math.abs(p.seg.peakT - s.seg.peakT) > 450)) picked.push(s);
     }
-    for (const s of picked) s.label = `${type}:${rec.expectedTarget ?? 'head'}` as Label;
+    for (const s of picked) s.label = kindOf(type);
   }
   return out;
 }
