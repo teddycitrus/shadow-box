@@ -254,7 +254,8 @@ npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense cha
 | `/` | Title screen with a bot vs bot demo behind the menu |
 | `/practice` | Practice against the bot |
 | `/create` | Create a room, then share the opponent and watch links |
-| `/play/CODE` | Join room `CODE` as a player (opens the spectator view if full) |
+| `/join/CODE` | Invite link for the opponent; joins room `CODE` as a player (opens the spectator view if full) |
+| `/play/CODE` | Your own seat in room `CODE`; reloading it rejoins the same corner |
 | `/watch/CODE` | Watch room `CODE` |
 
 ### Flags

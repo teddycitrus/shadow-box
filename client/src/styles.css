@@ -243,3 +243,5 @@ body.fighting .webcam .keyhelp > * { white-space: nowrap; }
   .lobby { max-height: calc(100vh - 380px); overflow: auto; }
   body.fighting .webcam:has(.keyhelp) { display: none; }
 }
+.copyrow { grid-template-columns: 112px 1fr auto; }
+.linkpath { background: #0e1016; border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; font: 600 14px var(--body); color: var(--ink); letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

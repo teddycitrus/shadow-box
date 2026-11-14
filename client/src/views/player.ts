@@ -87,13 +87,20 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
   const players = h('div', { class: 'players' });
   const share = h('div', { class: 'share' });
   if (opts.code) {
-    const playUrl = `${location.origin}/play/${opts.code}`;
-    const watchUrl = `${location.origin}/watch/${opts.code}`;
-    const copyRow = (label: string, url: string) => {
-      const field = h('input', { value: url, readonly: '' });
-      return h('div', { class: 'copyrow' }, h('span', {}, label), field, button('Copy', () => void navigator.clipboard.writeText(url)));
+    const copyRow = (label: string, path: string) => {
+      const url = `${location.origin}${path}`;
+      const copy = button('Copy', () => {
+        void navigator.clipboard.writeText(url);
+        copy.textContent = 'Copied';
+        setTimeout(() => (copy.textContent = 'Copy'), 1500);
+      });
+      return h('div', { class: 'copyrow' }, h('span', {}, label), h('code', { class: 'linkpath', title: url }, path), copy);
     };
-    share.append(h('div', { class: 'code' }, opts.code), copyRow('Opponent link', playUrl), copyRow('Watch link', watchUrl));
+    share.append(
+      h('div', { class: 'code' }, opts.code),
+      copyRow('Send to opponent', `/join/${opts.code}`),
+      copyRow('Send to viewers', `/watch/${opts.code}`),
+    );
   }
   const lobby = h('div', { class: 'panel lobby' },
     h('h2', {}, opts.practice ? 'Practice' : 'Fight lobby'),

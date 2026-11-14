@@ -92,11 +92,11 @@ function online(mode: { create: true } | { join: string }): void {
   };
 }
 
-const m = path.match(/^\/(play|watch)\/([A-Za-z]{4})$/);
+const m = path.match(/^\/(play|join|watch)\/([A-Za-z]{4})$/);
 if (path === '' || path === '/') title();
 else if (path === '/practice') startPlayer(app, new PracticeLink(), makeInput(), { practice: true });
 else if (path === '/create') online({ create: true });
-else if (m?.[1] === 'play') online({ join: m[2].toUpperCase() });
+else if (m?.[1] === 'play' || m?.[1] === 'join') online({ join: m[2].toUpperCase() });
 else if (m?.[1] === 'watch') {
   const link = new OnlineLink({ watch: m[2].toUpperCase() });
   link.onError = showError;
