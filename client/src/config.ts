@@ -62,13 +62,14 @@ export const CONFIG = {
     gassedCooldownMs: 450,
     swFollowMs: 1_000,
     /**
-     * Head line: a punch is a body shot unless the fist peaks at least this high relative to the
-     * nose (sw, up positive). The default is nose level; calibration moves it within
-     * [headLineMin, headLineMax] from the player's own head and body straights.
+     * Body shots are thrown crouched: a punch is a body shot when the head dips at least bodyDip
+     * (sw below the neutral head position) by its peak, otherwise a head shot. Calibration sets it
+     * to bodyDipFraction of the player's own crouch depth, within [bodyDipMin, bodyDipMax].
      */
-    headLine: 0,
-    headLineMin: -0.25,
-    headLineMax: 0.5,
+    bodyDip: 0.4,
+    bodyDipFraction: 0.45,
+    bodyDipMin: 0.3,
+    bodyDipMax: 0.8,
   },
 
   straight: {

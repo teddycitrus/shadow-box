@@ -4,7 +4,7 @@ import type { PathPoint, Segment } from './classifier.ts';
 
 /**
  * The model learns the punch shape per hand only; the hand and stance give the exact punch, and
- * the fist height against the player's head line gives the target (targetOf). `none` marks motions that are not punches
+ * the head dip gives the target (targetOf). `none` marks motions that are not punches
  * (adjusting the guard, dropping or raising the hands, wind-ups).
  */
 export type Kind = 'straight' | 'hook' | 'uppercut';
@@ -21,30 +21,30 @@ export function punchOf(kind: Kind, hand: Hand, stance: Stance): PunchType {
 }
 
 /**
- * Per hand: the lowest fist peak, in sw above the nose (negative is below), that still reads as a
- * head shot. Everything below it is a body shot.
+ * Head or body, for every punch kind: a punch thrown crouched (head dipped at least `bodyDip` below
+ * its neutral position by the peak) is a body shot, a punch thrown standing is a head shot. The head
+ * drop reads the same from any camera height, unlike the fist height.
  */
-export type HeadLine = Record<Hand, number>;
-
-export const DEFAULT_HEAD_LINE: HeadLine = { left: CONFIG.punch.headLine, right: CONFIG.punch.headLine };
-
-/** Fist height at the peak relative to the nose, in sw (up positive). */
-export function headHeight(s: Pick<Segment, 'peak' | 'nose'>): number {
-  return s.peak.y - s.nose.y;
+export function targetOf(s: Pick<Segment, 'dip'>, bodyDip: number = CONFIG.punch.bodyDip): Target {
+  return s.dip >= bodyDip ? 'body' : 'head';
 }
 
 /**
- * Head or body. Every punch is a body shot unless the fist clearly went high: at or above the
- * player's head line for straights, at or above the line but never stricter than nose level for
- * hooks (a hook does not come toward the camera, so it does not rise on screen like a straight),
- * and up to chin level for uppercuts. The chin sits 45% of the way from the nose to the shoulder
- * line (as in the classifier), so it is 0.45 of the nose height below the nose.
- * Picked on the recorded reps (scripts/eval-target.ts).
+ * The player's body-shot dip: bodyDipFraction of the way from how far the head moves on standing
+ * punches (median, 0 when none) to how deep the player crouches on body punches (median of the
+ * crouch reps, or the demonstrated duck when there are fewer than two), clamped to
+ * [bodyDipMin, bodyDipMax]. Nothing measured gives the default.
  */
-export function targetOf(s: Pick<Segment, 'hand' | 'peak' | 'nose'>, kind: Kind, line: HeadLine = DEFAULT_HEAD_LINE): Target {
-  const l = line[s.hand];
-  const need = kind === 'straight' ? l : Math.min(l, CONFIG.punch.headLine) - (kind === 'uppercut' ? 0.45 * s.nose.y : 0);
-  return headHeight(s) >= need ? 'head' : 'body';
+export function bodyDipFrom(crouch: number[], stand: number[], duck: number | null): number {
+  const p = CONFIG.punch;
+  const med = (a: number[]) => {
+    const s = [...a].sort((x, y) => x - y);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  };
+  const deep = crouch.length >= 2 ? med(crouch) : duck;
+  if (deep === null || !(deep > 0)) return p.bodyDip;
+  const floor = stand.length ? Math.max(0, med(stand)) : 0;
+  return Math.max(p.bodyDipMin, Math.min(p.bodyDipMax, floor + (deep - floor) * p.bodyDipFraction));
 }
 
 export interface Sample {
@@ -189,36 +189,11 @@ export class KnnModel {
   }
 
   /** Classifier hook: a punch, or null for a non-punch. */
-  decide(s: Segment, stance: Stance, line: HeadLine = DEFAULT_HEAD_LINE): Punch | null {
+  decide(s: Segment, stance: Stance, bodyDip: number = CONFIG.punch.bodyDip): Punch | null {
     const label = confident(this.predict(s.hand, vector(s)));
     if (label === 'none') return null;
-    return { type: punchOf(label, s.hand, stance), hand: s.hand, target: targetOf(s, label, line) };
+    return { type: punchOf(label, s.hand, stance), hand: s.hand, target: targetOf(s, bodyDip) };
   }
-}
-
-/**
- * The player's head line per hand, from their taught straights (height = headHeight of the rep):
- * midway between the median head rep and the median body rep of that hand, falling back to both
- * hands together and then to nose level, and always clamped to [headLineMin, headLineMax], so a
- * head shot never needs less than a fist at about chin height.
- */
-export function headLineFrom(straights: { hand: Hand; h: number; target: Target }[]): HeadLine {
-  const p = CONFIG.punch;
-  const med = (a: number[]) => {
-    const s = [...a].sort((x, y) => x - y);
-    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
-  };
-  const line = (xs: typeof straights): number | null => {
-    const head = xs.filter((x) => x.target === 'head').map((x) => x.h), body = xs.filter((x) => x.target === 'body').map((x) => x.h);
-    if (!head.length || !body.length || med(head) <= med(body)) return null;
-    return (med(head) + med(body)) / 2;
-  };
-  const clamp = (v: number) => Math.max(p.headLineMin, Math.min(p.headLineMax, v));
-  const both = line(straights) ?? p.headLine;
-  return {
-    left: clamp(line(straights.filter((x) => x.hand === 'left')) ?? both),
-    right: clamp(line(straights.filter((x) => x.hand === 'right')) ?? both),
-  };
 }
 
 /**

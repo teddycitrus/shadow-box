@@ -6,7 +6,7 @@ import type { PunchType, Stance, Target } from '../shared/types.ts';
 import type { Calibration } from '../client/src/tracking/calibration.ts';
 import { Classifier, passesGate, type Segment } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
-import { KnnModel, headHeight, headLineFrom, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
+import { KnnModel, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
 import { handFor } from '../client/src/tracking/teach.ts';
 import { FIXTURE_REPS } from './eval-gt.ts';
 
@@ -66,7 +66,8 @@ export function labelledSegments(file: string, rec: Recording): LabelledSegment[
     const best = out
       .filter((s) => s.seg.hand === hand && s.label === 'none' && Math.abs(s.seg.peakT - at) <= 350)
       .sort((a, b) => Math.abs(a.seg.peakT - at) - Math.abs(b.seg.peakT - at))[0];
-    if (best) Object.assign(best, { label: kindOf(type), target: rec.expectedTarget ?? 'head' });
+    // Every recorded rep was thrown standing (even the ones aimed low), so each is a head shot.
+    if (best) Object.assign(best, { label: kindOf(type), target: 'head' });
   }
   return out;
 }
@@ -93,10 +94,9 @@ export function scoreCalibration(all: LabelledSegment[], shots = 3): Score {
     for (const s of segs) (s.seg.endT <= cut ? train : test).push(s);
   }
   const m = new KnnModel(train.map((s) => ({ hand: s.seg.hand, label: s.label, v: vector(s.seg) })));
-  const line = headLineFrom(train.filter((s) => s.label === 'straight').map((s) => ({ hand: s.seg.hand, h: headHeight(s.seg), target: s.target })));
   const score: Score = { punches: 0, exact: 0, nonPunches: 0, falseFires: 0 };
   for (const s of test) {
-    const p = m.decide(s.seg, 'orthodox', line);
+    const p = m.decide(s.seg, 'orthodox');
     if (s.label === 'none') {
       score.nonPunches++;
       if (p) score.falseFires++;

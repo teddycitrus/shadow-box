@@ -1,4 +1,5 @@
 import { NO_DEFENSE, WIRE_LANDMARKS, type DefenseState, type Hand, type Punch, type PunchType, type Stance, type WirePose } from '../../../shared/types.ts';
+import { CONFIG } from '../config.ts';
 import { Calibrator, looksLikeGuard, type Calibration, type CalibrationStatus } from './calibration.ts';
 import { Classifier, type ClassifierOutput } from './classifier.ts';
 import { SessionLog } from './session.ts';
@@ -43,7 +44,7 @@ export interface InputSource {
 }
 
 /** Bump when the feature vector or the taught labels change so old profiles are not reused. */
-const PROFILE_KEY = 'shadowbox:profile:v5';
+const PROFILE_KEY = 'shadowbox:profile:v6';
 
 export const SW_METRES = 0.38;
 
@@ -130,13 +131,15 @@ export class CameraInput implements InputSource {
     if (this.classifier) {
       this.classifier.model = undefined;
       this.classifier.onSegment = undefined;
+      this.classifier.bodyDip = CONFIG.punch.bodyDip;
     }
   }
 
   private apply(p: Profile): void {
     const c = this.classifier!;
     const m = modelFrom(p, priorSamples(this.stance));
-    c.model = m ? (seg) => m.decide(seg, this.stance, p.headLine) : undefined;
+    c.model = m ? (seg) => m.decide(seg, this.stance, p.bodyDip) : undefined;
+    c.bodyDip = p.bodyDip;
     c.onSegment = undefined;
     c.defenseThresholds = { ...p.defense };
     this.learned = p.learned;
@@ -146,7 +149,7 @@ export class CameraInput implements InputSource {
   private loadProfile(): Profile | null {
     try {
       const p = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? 'null') as Profile | null;
-      return p && p.version === 5 && Array.isArray(p.samples) ? p : null;
+      return p && p.version === 6 && Array.isArray(p.samples) && typeof p.bodyDip === 'number' ? p : null;
     } catch {
       return null;
     }
@@ -226,7 +229,7 @@ const PUNCH_KEYS: Record<string, PunchType> = {
 
 export const KEY_HELP = [
   ['J', 'Jab'], ['K', 'Cross'], ['U / I', 'Left / right hook'], ['N / M', 'Left / right uppercut'],
-  ['Shift + punch', 'Head shot (a plain punch is a body shot)'], ['Space (hold)', 'High guard'], ['S (hold)', 'Duck'], ['A / D (hold)', 'Slip left / right'],
+  ['Shift + punch', 'Body shot, crouched (a plain punch is a head shot)'], ['Space (hold)', 'High guard'], ['S (hold)', 'Duck'], ['A / D (hold)', 'Slip left / right'],
 ] as const;
 
 /** ?keys=1: keyboard simulation of every punch and defense, with a procedural pose. */
@@ -260,7 +263,7 @@ export class KeyInput implements InputSource {
       if (e.repeat) return;
       this.held.add(e.code);
       const type = PUNCH_KEYS[e.code];
-      if (type) this.throw(type, e.shiftKey ? 'head' : 'body');
+      if (type) this.throw(type, e.shiftKey ? 'body' : 'head');
     });
     addEventListener('keyup', (e) => this.held.delete(e.code));
     addEventListener('blur', () => this.held.clear());

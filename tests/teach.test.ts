@@ -80,15 +80,18 @@ describe('guided calibration', () => {
   });
 
   it('learns every punch it prompted, with all of its reps', () => {
-    expect(profile.version).toBe(5);
+    expect(profile.version).toBe(6);
     expect(profile.learned).toEqual([
-      'jab-body', 'cross-body', 'leftHook-body', 'rightHook-body', 'leftUppercut-body', 'rightUppercut-body', 'jab-head', 'cross-head',
+      'jab-head', 'cross-head', 'leftHook-head', 'rightHook-head', 'leftUppercut-head', 'rightUppercut-head', 'jab-body', 'cross-body',
     ]);
     expect(profile.samples.filter((s) => s.label !== 'none').length).toBeGreaterThanOrEqual(8 * CONFIG.model.repsPerMove);
-    for (const hand of ['left', 'right'] as const) {
-      expect(profile.headLine[hand]).toBeGreaterThanOrEqual(CONFIG.punch.headLineMin);
-      expect(profile.headLine[hand]).toBeLessThanOrEqual(CONFIG.punch.headLineMax);
-    }
+  });
+
+  it('sets the body dip between standing and the crouch', () => {
+    expect(profile.bodyDip).toBeGreaterThanOrEqual(CONFIG.punch.bodyDipMin);
+    expect(profile.bodyDip).toBeLessThanOrEqual(CONFIG.punch.bodyDipMax);
+    // Clearly below the dip of a synthetic crouched punch at its peak (about 0.6 sw).
+    expect(profile.bodyDip).toBeLessThan(0.5);
   });
 
   it('verifies every move with the player\'s own model', () => {
@@ -105,14 +108,15 @@ describe('guided calibration', () => {
   it('the trained model classifies fresh punches correctly', () => {
     const model = modelFrom(profile)!;
     expect(model).toBeInstanceOf(KnnModel);
-    // Every taught move: all six to the body, jab and cross to the head.
+    // Every taught move (all six standing, jab and cross crouched), and crouched hooks and
+    // uppercuts, which were never taught crouched but still read as body shots from the dip.
     const cases: [PunchType, Target][] = [
+      ['jab', 'head'], ['cross', 'head'], ['leftHook', 'head'], ['rightHook', 'head'], ['leftUppercut', 'head'], ['rightUppercut', 'head'],
       ['jab', 'body'], ['cross', 'body'], ['leftHook', 'body'], ['rightHook', 'body'], ['leftUppercut', 'body'], ['rightUppercut', 'body'],
-      ['jab', 'head'], ['cross', 'head'],
     ];
     for (const [type, target] of cases) {
       const c = new Classifier(cal);
-      c.model = (s) => model.decide(s, 'orthodox', profile.headLine);
+      c.model = (s) => model.decide(s, 'orthodox', profile.bodyDip);
       const got: Punch[] = [];
       for (let k = 0; k < 900; k += DT) {
         got.push(...c.update(synthFrame({ t: k, defense: NO_DEFENSE, punch: { type, hand: handFor(type, 'orthodox'), target, startT: 100, windupMs: 80 } })).punches);
@@ -131,20 +135,33 @@ describe('guided calibration', () => {
   });
 
   it('says when a head shot was read as a body shot', () => {
-    const r = teach({ prompt: 'Jab to the head', throw: 'jab', target: 'body' });
+    const r = teach({ prompt: 'Jab', throw: 'jab', target: 'body' });
     expect(r.done).toBe(true);
-    expect(r.results).toContain('Read as body. Bring your fist up to eye level');
-    const jab = r.profile.scores.find((s) => s.prompt === 'Jab to the head')!;
+    expect(r.results).toContain('Read as body. Stand tall for a head shot');
+    const jab = r.profile.scores.find((s) => s.prompt === 'Jab')!;
     expect(jab.wrongTarget).toBe(1);
     expect(jab.ok).toBeGreaterThanOrEqual(CONFIG.model.verifyPasses);
   });
 
-  it('steps aim at the chest by default and only the head steps go high', () => {
-    const r = teach();
-    const steps = new Teacher('orthodox').steps.filter((s) => s.kind === 'punch');
-    expect(steps.filter((s) => s.target === 'head').map((s) => s.prompt)).toEqual(['Jab to the head', 'Cross to the head']);
-    for (const s of steps) expect(s.how).toContain(s.target === 'head' ? 'eye level' : 'chest');
+  it('says when a body shot was thrown standing', () => {
+    const r = teach({ prompt: 'Crouch and cross', throw: 'cross', target: 'head' });
     expect(r.done).toBe(true);
+    expect(r.results).toContain('Read as head. Crouch lower for a body shot');
+    const cross = r.profile.scores.find((s) => s.prompt === 'Crouch and cross')!;
+    expect(cross.wrongTarget).toBe(1);
+    expect(cross.ok).toBeGreaterThanOrEqual(CONFIG.model.verifyPasses);
+  });
+
+  it('teaches the duck first, every punch standing, then jab and cross crouched', () => {
+    const all = new Teacher('orthodox').steps;
+    expect(all.findIndex((s) => s.kind === 'duck')).toBeLessThan(all.findIndex((s) => s.kind === 'punch'));
+    const steps = all.filter((s) => s.kind === 'punch');
+    expect(steps.filter((s) => s.target === 'body').map((s) => s.prompt)).toEqual(['Crouch and jab', 'Crouch and cross']);
+    expect(steps.filter((s) => s.target === 'head')).toHaveLength(6);
+    for (const s of steps) {
+      expect(s.how).toContain(s.target === 'head' ? 'standing tall' : 'like a duck');
+      expect(s.how).toContain(`${CONFIG.model.repsPerMove} times`);
+    }
   });
 });
 
@@ -155,7 +172,7 @@ function seg(hand: 'left' | 'right', t: number, travel: number, dx = 0, dy = tra
   return {
     hand, startT: t - 150, peakT: t, endT: t + 60, dIn: dx, rise: dy, fwd: 0, forward: 0, elbow: 150, startElbow: 90, startY: 0, peakY: -dy,
     chinY: -0.3, startHead: 0.6, peakHead: 1, scaleGain: 0, travel, maxSpeed: 8, maxUp: 0, reach: 1, startReach: 0.7, fromGuard: true,
-    start, peak, nose: { x: 0.3, y: 0.4 }, path: [start, peak], other: 0, otherRise: 0, headDrop: 0,
+    start, peak, nose: { x: 0.3, y: 0.4 }, path: [start, peak], other: 0, otherRise: 0, headDrop: 0, dip: 0,
   };
 }
 

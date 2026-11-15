@@ -3,7 +3,7 @@
 import type { Hand, Stance, Target } from './types.ts';
 
 /** Feature-vector version. Matches the client Profile version; bump both together. */
-export const DATA_VERSION = 5;
+export const DATA_VERSION = 6;
 export const FEATURE_COUNT = 17;
 export const MAX_SAMPLES = 400;
 export const MAX_SCORES = 24;
@@ -44,7 +44,8 @@ export interface CalibrationUpload {
   model: 'full' | 'lite';
   samples: UploadSample[];
   scores: UploadScore[];
-  bodySplit?: Record<Hand, number>;
+  /** Head dip (sw below neutral) the calibration set for a body shot (version 6 on). */
+  bodyDip?: number;
   defense?: { duck: number; slipLeft: number; slipRight: number };
 }
 
@@ -115,10 +116,9 @@ export function validateCalibration(x: unknown): CalibrationUpload | string {
   const out: CalibrationUpload = {
     version: DATA_VERSION, id: x.id, client: x.client, stance: x.stance, fps: round(x.fps, 1), model: x.model, samples, scores,
   };
-  if (x.bodySplit !== undefined) {
-    const b = x.bodySplit;
-    if (!isObj(b) || !num(b.left, -10, 10) || !num(b.right, -10, 10)) return 'bad bodySplit';
-    out.bodySplit = { left: round(b.left, 4), right: round(b.right, 4) };
+  if (x.bodyDip !== undefined) {
+    if (!num(x.bodyDip, 0, 5)) return 'bad bodyDip';
+    out.bodyDip = round(x.bodyDip, 4);
   }
   if (x.defense !== undefined) {
     const d = x.defense;

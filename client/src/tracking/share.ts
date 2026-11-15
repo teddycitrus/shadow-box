@@ -66,8 +66,7 @@ export function toUpload(profile: Profile, meta: UploadMeta): CalibrationUpload 
       return { hand: s.hand, label: s.label, v: s.v.map(r), ...(target && s.label === 'straight' ? { target } : {}) };
     }),
     scores: (profile.scores ?? []).map((m) => ({ id: m.id, ok: m.ok, tries: m.tries })),
-    // From version 5 this field carries the head line (lowest fist peak read as a head shot, sw above the nose).
-    bodySplit: { left: r(profile.headLine.left), right: r(profile.headLine.right) },
+    bodyDip: r(profile.bodyDip),
     defense: { duck: r(profile.defense.duck), slipLeft: r(profile.defense.slipLeft), slipRight: r(profile.defense.slipRight) },
   };
 }

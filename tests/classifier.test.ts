@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fixtureReps, labelledSegments, loadFixtures, scoreCalibration, type Recording } from '../scripts/eval-core.ts';
 import { Calibrator, framingCheck, measure } from '../client/src/tracking/calibration.ts';
 import { Classifier } from '../client/src/tracking/classifier.ts';
-import { KnnModel, headHeight, headLineFrom, vector } from '../client/src/tracking/model.ts';
+import { KnnModel, vector } from '../client/src/tracking/model.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
 import { synthFrame, type SynthState } from '../client/src/tracking/synthetic.ts';
 import { NO_DEFENSE, type DefenseState, type Punch, type PunchType, type Stance, type Target } from '../shared/types.ts';
@@ -79,6 +79,8 @@ describe('punch classification', () => {
     ['rightHook', 'right', 'body'],
     ['leftUppercut', 'left', 'head'],
     ['rightUppercut', 'right', 'head'],
+    ['leftUppercut', 'left', 'body'],
+    ['rightUppercut', 'right', 'body'],
   ];
   for (const [type, hand, target] of cases) {
     it(`detects a ${target} ${type} exactly once`, () => {
@@ -86,6 +88,35 @@ describe('punch classification', () => {
       expect(punches).toEqual([{ type, hand, target, at: expect.any(Number) }]);
     });
   }
+
+  it('a crouched punch still fires, as a body shot, while the head reads as ducking', () => {
+    const { punches, defenses } = run(throwSeq('cross', 'right', 'body'));
+    expect(punches.map((p) => p.target)).toEqual(['body']);
+    expect(defenses.some((d) => d.duck)).toBe(true);
+    // Standing tall: a head shot, and never a duck.
+    const tall = run(throwSeq('cross', 'right', 'head'));
+    expect(tall.punches.map((p) => p.target)).toEqual(['head']);
+    expect(tall.defenses.some((d) => d.duck)).toBe(false);
+  });
+
+  it('throws body shots from a held crouch', () => {
+    const seq: SynthState[] = [];
+    for (let t = 0; t < 1600; t += 1000 / FPS) {
+      const startT = t < 800 ? 300 : 900;
+      seq.push({ t, defense: { ...NO_DEFENSE, duck: t >= 100 }, punch: { type: 'jab', hand: 'left', target: 'body', startT, windupMs: 0 } });
+    }
+    const { punches, defenses } = run(seq);
+    expect(punches.map((p) => `${p.type}:${p.target}`)).toEqual(['jab:body', 'jab:body']);
+    expect(defenses.at(-1)!.duck).toBe(true);
+  });
+
+  it('ducking down and back up fires no punch', () => {
+    const seq: SynthState[] = [];
+    for (let t = 0; t < 3000; t += 1000 / FPS) seq.push({ t, defense: { ...GUARD, duck: Math.floor(t / 500) % 2 === 1 } });
+    const { punches, defenses } = run(seq);
+    expect(punches).toEqual([]);
+    expect(defenses.filter((d, i) => d.duck && !defenses[i - 1]?.duck).length).toBeGreaterThanOrEqual(2);
+  });
 
   it('maps the lead hand to jab for southpaws', () => {
     const { punches } = run(throwSeq('jab', 'right', 'head'), 'southpaw');
@@ -154,11 +185,10 @@ describe('recorded fixtures (tests/fixtures, see FIXTURES.md)', () => {
 
   it.skipIf(!hasPunches)('fires right after the peak instead of waiting for the retraction', () => {
     const m = new KnnModel(segs.map((s) => ({ hand: s.seg.hand, label: s.label, v: vector(s.seg) })));
-    const line = headLineFrom(segs.filter((s) => s.label === 'straight').map((s) => ({ hand: s.seg.hand, h: headHeight(s.seg), target: s.target })));
     const lags: number[] = [];
     for (const { rec } of fixtures.filter((f) => f.rec.expected?.length)) {
       const c = new Classifier(rec.calibration!);
-      c.model = (seg) => m.decide(seg, 'orthodox', line);
+      c.model = (seg) => m.decide(seg, 'orthodox');
       rec.frames.forEach((f, i) => {
         // Frames from the peak to the frame the punch fired on.
         for (const p of c.update(f).punches) lags.push(i - rec.frames.findIndex((g) => g.t === p.at));

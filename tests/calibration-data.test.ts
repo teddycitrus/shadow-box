@@ -11,14 +11,14 @@ const vec = (base: number) => Array.from({ length: FEATURE_COUNT }, (_, i) => ba
 
 function upload(over: Partial<CalibrationUpload> = {}): Record<string, unknown> {
   return {
-    version: 5, id: `cal-${Math.floor(rng() * 1e9)}`, client: '0.1.0', stance: 'orthodox', fps: 30, model: 'full',
+    version: 6, id: `cal-${Math.floor(rng() * 1e9)}`, client: '0.1.0', stance: 'orthodox', fps: 30, model: 'full',
     samples: [
       { hand: 'left', label: 'straight', v: vec(1), target: 'body' },
       { hand: 'right', label: 'hook', v: vec(-1) },
       { hand: 'left', label: 'none', v: vec(0) },
     ],
     scores: [{ id: 'jab-head', ok: 2, tries: 2 }],
-    bodySplit: { left: 0.8, right: 0.9 },
+    bodyDip: 0.45,
     defense: { duck: 0.5, slipLeft: 0.4, slipRight: 0.4 },
     ...over,
   };
@@ -26,10 +26,12 @@ function upload(over: Partial<CalibrationUpload> = {}): Record<string, unknown> 
 
 describe('validateCalibration', () => {
   it('accepts a well formed upload and strips unknown fields', () => {
-    const c = validateCalibration({ ...upload(), secret: 'x', samples: [{ hand: 'left', label: 'straight', v: vec(1), extra: 1 }] });
+    const c = validateCalibration({ ...upload(), secret: 'x', bodySplit: { left: 0.8, right: 0.9 }, samples: [{ hand: 'left', label: 'straight', v: vec(1), extra: 1 }] });
     expect(typeof c).toBe('object');
     const ok = c as CalibrationUpload;
     expect(ok).not.toHaveProperty('secret');
+    expect(ok).not.toHaveProperty('bodySplit');
+    expect(ok.bodyDip).toBe(0.45);
     expect(ok.samples[0]).not.toHaveProperty('extra');
   });
 
@@ -43,7 +45,7 @@ describe('validateCalibration', () => {
   });
 
   it.each([
-    ['wrong version', { version: 4 }],
+    ['wrong version', { version: 5 }],
     ['bad id', { id: 'short' }],
     ['bad stance', { stance: 'boxer' }],
     ['fps out of range', { fps: 1000 }],
@@ -58,7 +60,8 @@ describe('validateCalibration', () => {
     ['bad label', { samples: [{ hand: 'left', label: 'kick', v: vec(0) }] }],
     ['ok above tries', { scores: [{ id: 'jab-head', ok: 3, tries: 2 }] }],
     ['bad score id', { scores: [{ id: '<script>', ok: 0, tries: 0 }] }],
-    ['bad bodySplit', { bodySplit: { left: NaN, right: 0 } }],
+    ['bad bodyDip', { bodyDip: -1 }],
+    ['non-finite bodyDip', { bodyDip: NaN }],
   ])('rejects %s', (_, over) => {
     expect(typeof validateCalibration(upload(over as Partial<CalibrationUpload>))).toBe('string');
   });
@@ -118,7 +121,7 @@ describe('prior', () => {
 
 describe('CalibrationStore', () => {
   const req = (over: Partial<ApiRequest> & { raw?: string }): ApiRequest => ({
-    method: 'GET', path: '/api/prior', search: new URLSearchParams('version=5'), ip: '1.2.3.4', auth: null, adminKey: undefined,
+    method: 'GET', path: '/api/prior', search: new URLSearchParams('version=6'), ip: '1.2.3.4', auth: null, adminKey: undefined,
     body: async () => over.raw ?? '', ...over,
   });
 
@@ -144,7 +147,7 @@ describe('CalibrationStore', () => {
     const prior = (await store.handle(req({}))).body as { calibrations: number; groups: unknown[] };
     expect(prior.calibrations).toBe(UPLOADS_PER_HOUR);
     expect(prior.groups.length).toBe(3);
-    expect((await store.handle(req({ search: new URLSearchParams('version=4') }))).status).toBe(404);
+    expect((await store.handle(req({ search: new URLSearchParams('version=5') }))).status).toBe(404);
   });
 
   it('ignores duplicate ids and leaves poorly verified calibrations out of the prior', async () => {
@@ -153,7 +156,7 @@ describe('CalibrationStore', () => {
     expect((await store.submit(JSON.stringify(a), 'a')).status).toBe(201);
     expect((await store.submit(JSON.stringify(a), 'a')).body).toEqual({ ok: true, duplicate: true });
     expect((await store.submit(JSON.stringify(upload({ scores: [{ id: 'jab-head', ok: 0, tries: 4 }] })), 'a')).status).toBe(201);
-    expect(((await store.getPrior('5')).body as { calibrations: number }).calibrations).toBe(1);
+    expect(((await store.getPrior('6')).body as { calibrations: number }).calibrations).toBe(1);
   });
 
   it('keeps the built prior per version and rebuilds it from the reservoirs after a bump', async () => {
@@ -161,13 +164,13 @@ describe('CalibrationStore', () => {
     const store = new CalibrationStore(kv, () => 0, seeded(5));
     expect((await store.submit(JSON.stringify(upload()), 'a')).status).toBe(201);
     // A prior stored by the previous version is left alone and never served.
-    kv.data.set('prior', { at: 0, value: { version: 4, updated: 0, calibrations: 1, mean: [], std: [], groups: [] } });
+    kv.data.set('prior:v5', { at: 0, value: { version: 5, updated: 0, calibrations: 1, mean: [], std: [], groups: [] } });
     const fresh = new CalibrationStore(kv, () => 0, seeded(5));
-    const p = (await fresh.getPrior('5')).body as { version: number; calibrations: number; groups: unknown[] };
-    expect(p.version).toBe(5);
+    const p = (await fresh.getPrior('6')).body as { version: number; calibrations: number; groups: unknown[] };
+    expect(p.version).toBe(6);
     expect(p.calibrations).toBe(1);
     expect(p.groups.length).toBe(3);
-    expect(kv.data.has('prior:v5')).toBe(true);
+    expect(kv.data.has('prior:v6')).toBe(true);
   });
 
   it('export is disabled without ADMIN_KEY and needs the bearer key', async () => {

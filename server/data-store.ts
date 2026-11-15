@@ -40,7 +40,7 @@ const EXPORT_PAGE = 200;
 /**
  * The built prior is stored per data version, so a version bump starts a fresh one instead of
  * serving the old version's (which clients reject). The reservoirs hold only segment features and
- * punch kinds, which did not change from version 4 to 5, so they carry over.
+ * punch kinds, which did not change from version 4 to 6, so they carry over.
  */
 const PRIOR_KEY = `prior:v${DATA_VERSION}`;
 

@@ -2,7 +2,7 @@ import type { DefenseState, Hand, Punch, PunchType, Stance } from '../../../shar
 import { CONFIG } from '../config.ts';
 import type { Calibration } from './calibration.ts';
 import { HAND_IDX, L, angle3, dist2, dist3, mid, type Lm, type PoseFrame } from './frame.ts';
-import { kindOf, targetOf } from './model.ts';
+import { targetOf } from './model.ts';
 
 export interface HandFeatures {
   /** Shoulder-to-wrist 3D distance over calibrated arm length. */
@@ -89,8 +89,13 @@ export interface Segment {
   other: number;
   /** The other hand's vertical move over the same time, in sw (up is positive). */
   otherRise: number;
-  /** Head drop from start to peak, in sw (body shots often bend the knees). */
+  /** Nose drop relative to the shoulders from start to peak, in sw (a model feature). */
   headDrop: number;
+  /**
+   * Deepest head dip below the neutral head position (the defense headDy, calibrated sw, down
+   * positive) from the start of the motion to just past its peak. A crouched punch is a body shot.
+   */
+  dip: number;
 }
 
 interface Sample {
@@ -102,6 +107,8 @@ interface Sample {
   img: Lm;
   z: number;
   nose: P2;
+  /** Head dip below neutral this frame (Features.headDy). */
+  dip: number;
 }
 
 interface Active {
@@ -181,6 +188,8 @@ export class Classifier {
   defenseThresholds: { duck: number; slipLeft: number; slipRight: number } = {
     duck: CONFIG.defense.duckDrop, slipLeft: CONFIG.defense.slipShift, slipRight: CONFIG.defense.slipShift,
   };
+  /** Head dip (sw) that makes a punch a body shot for the rules; a taught profile passes its own to the model. */
+  bodyDip: number = CONFIG.punch.bodyDip;
 
   constructor(private cal: Calibration) {
     this.base = { x: cal.noseX, y: cal.noseY };
@@ -201,6 +210,9 @@ export class Classifier {
     const punches: ClassifierOutput['punches'] = [];
     const feats = {} as Record<Hand, HandFeatures>;
     const samples = {} as Record<Hand, Sample>;
+    // Head offset from the neutral position, before this frame moves the neutral (punches read the dip too).
+    const headDx = (nose.x - this.base.x) / this.cal.swImg;
+    const headDy = (nose.y - this.base.y) / this.cal.swImg;
 
     for (const hand of ['left', 'right'] as Hand[]) {
       const idx = HAND_IDX[hand];
@@ -231,7 +243,7 @@ export class Classifier {
       };
       feats[hand] = hf;
       const pe = loc(e);
-      samples[hand] = { t: f.t, gap: prev ? f.t - prev.t : 0, p: { t: f.t, x: pw.x, y: pw.y, ex: pe.x, ey: pe.y, s: hf.scale }, f: hf, img: { ...w }, z: wz, nose: loc(nose) };
+      samples[hand] = { t: f.t, gap: prev ? f.t - prev.t : 0, p: { t: f.t, x: pw.x, y: pw.y, ex: pe.x, ey: pe.y, s: hf.scale }, f: hf, img: { ...w }, z: wz, nose: loc(nose), dip: headDy };
     }
     for (const hand of ['left', 'right'] as Hand[]) {
       const p = this.stepHand(hand, samples[hand], chinY);
@@ -240,8 +252,6 @@ export class Classifier {
 
     const d = CONFIG.defense;
     const th = this.defenseThresholds;
-    const headDx = (nose.x - this.base.x) / this.cal.swImg;
-    const headDy = (nose.y - this.base.y) / this.cal.swImg;
     if (this.lastT !== null) {
       const k = 1 - Math.exp(-(f.t - this.lastT) / d.neutralDriftMs);
       if (Math.abs(headDx) < th.slipLeft * 0.5 && Math.abs(headDx) < th.slipRight * 0.5) this.base.x += (nose.x - this.base.x) * k;
@@ -426,6 +436,8 @@ export class Classifier {
     const w = CONFIG.straight.weights;
     let maxElbow = s0.f.elbow;
     for (let i = a.startIdx; i < st.buf.length; i++) maxElbow = Math.max(maxElbow, st.buf[i].f.elbow);
+    let dip = -Infinity;
+    for (let i = a.startIdx; i < Math.min(st.buf.length, a.peakIdx + 3); i++) dip = Math.max(dip, st.buf[i].dip);
     return {
       hand, startT: s0.t, peakT: pk.t, endT: t,
       dIn: pk.p.x - start.x, rise: pk.p.y - start.y, fwd,
@@ -436,6 +448,7 @@ export class Classifier {
       fromGuard: this.nearGuard(s0.f),
       start, peak: pk.p, nose: pk.nose, path, other, otherRise,
       headDrop: s0.nose.y - pk.nose.y,
+      dip,
     };
   }
 
@@ -458,7 +471,7 @@ export class Classifier {
       const m = this.model(seg);
       if (m !== undefined) return { punch: m, why: `${m ? `${m.type} ${m.target}` : 'none'} (model) ${info}` };
     }
-    const r = ruleDecision(seg, this.stance);
+    const r = ruleDecision(seg, this.stance, this.bodyDip);
     return { punch: r, why: `${r ? `${r.type} ${r.target}` : 'none'} ${info}` };
   }
 }
@@ -475,7 +488,7 @@ export function bothHands(seg: Segment): boolean {
 }
 
 /** The hand-written rules (used without a taught profile): decides a punch from one motion segment, or null. */
-export function ruleDecision(seg: Segment, stance: Stance): Punch | null {
+export function ruleDecision(seg: Segment, stance: Stance, bodyDip: number = CONFIG.punch.bodyDip): Punch | null {
   if (!passesGate(seg)) return null;
   const { hand } = seg;
   const u = CONFIG.uppercut;
@@ -490,7 +503,7 @@ export function ruleDecision(seg: Segment, stance: Stance): Punch | null {
     const lead: Hand = stance === 'orthodox' ? 'left' : 'right';
     type = hand === lead ? 'jab' : 'cross';
   }
-  return type ? { type, hand, target: targetOf(seg, kindOf(type)) } : null;
+  return type ? { type, hand, target: targetOf(seg, bodyDip) } : null;
 }
 
 /**

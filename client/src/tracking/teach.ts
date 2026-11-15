@@ -1,7 +1,7 @@
 import type { Hand, Punch, PunchType, Stance, Target } from '../../../shared/types.ts';
 import { CONFIG } from '../config.ts';
 import { passesGate, type Features, type Segment } from './classifier.ts';
-import { KnnModel, headHeight, headLineFrom, kindOf, vector, type HeadLine, type Label, type Sample } from './model.ts';
+import { KnnModel, bodyDipFrom, kindOf, vector, type Label, type Sample } from './model.ts';
 
 export type StepKind = 'rest' | 'punch' | 'duck' | 'slipLeft' | 'slipRight';
 
@@ -22,24 +22,24 @@ export function teachSteps(): TeachStep[] {
   const reps = CONFIG.model.repsPerMove;
   const p = (type: PunchType, target: Target, prompt: string): TeachStep => ({
     id: `${type}-${target}`, prompt, kind: 'punch', type, target,
-    how: `${target === 'head' ? 'Aim at the face, fist at your eye level' : 'Aim at the chest'}. ${reps} times, back to guard after each`,
+    how: `${target === 'head' ? 'Aim at the face, standing tall' : 'Dip your head like a duck, then punch'}. ${reps} times, back to guard after each`,
   });
-  // Every punch is a body shot unless it clearly goes high, so the plain steps aim at the chest
-  // and only the two head steps teach where this player's head shots end up.
+  // A standing punch is a head shot and a crouched one a body shot. The duck comes first so the
+  // crouch depth is known, and the crouch steps show how deep this player dips on a body shot.
   return [
     { id: 'rest', prompt: 'Guard up', how: 'Bounce, shift your feet, adjust your gloves. No punches.', kind: 'rest' },
     { id: 'drop', prompt: 'Drop your hands', how: 'Lower both gloves, then bring them back up. Twice.', kind: 'rest' },
-    p('jab', 'body', 'Jab'),
-    p('cross', 'body', 'Cross'),
-    p('leftHook', 'body', 'Left hook'),
-    p('rightHook', 'body', 'Right hook'),
-    p('leftUppercut', 'body', 'Left uppercut'),
-    p('rightUppercut', 'body', 'Right uppercut'),
-    p('jab', 'head', 'Jab to the head'),
-    p('cross', 'head', 'Cross to the head'),
     { id: 'duck', prompt: 'Duck', how: 'Do it once or twice, then come back', kind: 'duck' },
     { id: 'slipLeft', prompt: 'Slip left', how: 'Do it once or twice, then come back', kind: 'slipLeft' },
     { id: 'slipRight', prompt: 'Slip right', how: 'Do it once or twice, then come back', kind: 'slipRight' },
+    p('jab', 'head', 'Jab'),
+    p('cross', 'head', 'Cross'),
+    p('leftHook', 'head', 'Left hook'),
+    p('rightHook', 'head', 'Right hook'),
+    p('leftUppercut', 'head', 'Left uppercut'),
+    p('rightUppercut', 'head', 'Right uppercut'),
+    p('jab', 'body', 'Crouch and jab'),
+    p('cross', 'body', 'Crouch and cross'),
   ];
 }
 
@@ -80,12 +80,12 @@ export interface TeachStatus {
 }
 
 export interface Profile {
-  version: 5;
+  version: 6;
   samples: Sample[];
   defense: { duck: number; slipLeft: number; slipRight: number };
   learned: string[];
-  /** Lowest fist peak (sw above the nose) read as a head shot, per hand. */
-  headLine: HeadLine;
+  /** Head dip (sw below neutral) that makes a punch a body shot (bodyDipFrom). */
+  bodyDip: number;
   scores: MoveScore[];
 }
 
@@ -111,11 +111,11 @@ interface Taught {
  * The guided per-player calibration (about two and a half minutes):
  *  1. Rest: guard up and moving, then dropping and raising the hands. Every motion here is a
  *     taught non-punch.
- *  2. Each punch to the body (the default target), then jab and cross to the head, repsPerMove
- *     times each. The head and body straights set the player's head line. The real reps are
- *     picked out of the motions (wind-ups and fidgets become non-punch examples), and reps far
- *     from the rest of their move are dropped.
- *  3. Duck and slips, to set this player's thresholds.
+ *  2. Duck and slips, to set this player's thresholds.
+ *  3. Each punch standing (a head shot), then jab and cross crouched (body shots), repsPerMove
+ *     times each. The crouch reps and the duck set how far the head must dip for a body shot.
+ *     The real reps are picked out of the motions (wind-ups and fidgets become non-punch
+ *     examples), and reps far from the rest of their move are dropped.
  *  4. Verify: random punches are prompted and read back live with the player's own model. A
  *     wrong or missed read is taught with the right label on the spot and the move comes back
  *     until it is read right verifyPasses times (or runs out of tries).
@@ -131,7 +131,7 @@ export class Teacher {
   private extreme = { duck: 0, slipLeft: 0, slipRight: 0 };
   private verifyState: Verify | null = null;
   private scores = new Map<string, MoveScore>();
-  private cached: { model: KnnModel | null; line: HeadLine; kept: Taught[] } | null = null;
+  private cached: { model: KnnModel | null; bodyDip: number; kept: Taught[] } | null = null;
   private finished = false;
 
   constructor(private stance: Stance) {}
@@ -174,8 +174,8 @@ export class Teacher {
   /** The model to read punches with during the verify phase (null while learning: nothing fires). */
   decide(seg: Segment): Punch | null {
     if (this.phase !== 'verify' || this.finished) return null;
-    const { model, line } = this.trained();
-    return model ? model.decide(seg, this.stance, line) : null;
+    const { model, bodyDip } = this.trained();
+    return model ? model.decide(seg, this.stance, bodyDip) : null;
   }
 
   /** Feed every frame's features; also advances the steps. */
@@ -225,13 +225,14 @@ export class Teacher {
     this.cached = null;
   }
 
-  private trained(): { model: KnnModel | null; line: HeadLine; kept: Taught[] } {
+  private trained(): { model: KnnModel | null; bodyDip: number; kept: Taught[] } {
     if (!this.cached) {
       const kept = pruneOutliers(this.taught);
       const samples = kept.map(toSample);
+      const dips = (target: Target) => kept.filter((x) => x.label !== 'none' && x.step?.target === target).map((x) => x.seg.dip);
       this.cached = {
         model: samples.some((x) => x.label !== 'none') ? new KnnModel(samples) : null,
-        line: headLineFrom(kept.filter((x) => x.label === 'straight' && x.step?.target).map((x) => ({ hand: x.seg.hand, h: headHeight(x.seg), target: x.step!.target! }))),
+        bodyDip: bodyDipFrom(dips('body'), dips('head'), this.extreme.duck > 0 ? this.extreme.duck : null),
         kept,
       };
     }
@@ -355,7 +356,7 @@ export class Teacher {
     const pick = (measured: number, fallback: number) => (measured > fallback * 0.6 ? Math.max(fallback * 0.5, measured * k) : fallback);
     const kept = pruneOutliers(this.taught);
     return {
-      version: 5,
+      version: 6,
       samples: kept.map(toSample),
       defense: {
         duck: pick(this.extreme.duck, d.duckDrop),
@@ -363,7 +364,7 @@ export class Teacher {
         slipRight: pick(this.extreme.slipRight, d.slipShift),
       },
       learned: this.learned,
-      headLine: this.trained().line,
+      bodyDip: this.trained().bodyDip,
       scores: [...this.scores.values()],
     };
   }
@@ -379,13 +380,13 @@ function punchName(p: Punch): string {
   const names: Record<PunchType, string> = {
     jab: 'Jab', cross: 'Cross', leftHook: 'Left hook', rightHook: 'Right hook', leftUppercut: 'Left uppercut', rightUppercut: 'Right uppercut',
   };
-  return `${names[p.type]}${p.target === 'head' ? ' to the head' : ''}`;
+  return `${names[p.type]}${p.target === 'body' ? ' to the body' : ''}`;
 }
 
-/** Verify feedback on a wrong read; a right punch at the wrong height says which way to aim. */
+/** Verify feedback on a wrong read; a right punch at the wrong target says whether to stand or crouch. */
 export function readAs(p: Punch, asked: TeachStep): string {
   if (p.type !== asked.type) return `Read as ${punchName(p)}`;
-  return p.target === 'body' ? 'Read as body. Bring your fist up to eye level' : 'Read as head. Keep it at chest height';
+  return p.target === 'body' ? 'Read as body. Stand tall for a head shot' : 'Read as head. Crouch lower for a body shot';
 }
 
 function shuffle<T>(a: T[]): T[] {

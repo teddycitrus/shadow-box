@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import type { Punch } from '../shared/types.ts';
 import { Classifier, passesGate } from '../client/src/tracking/classifier.ts';
-import { KnnModel, headHeight, headLineFrom, kindOf, vector, type Sample } from '../client/src/tracking/model.ts';
+import { KnnModel, kindOf, vector, type Sample } from '../client/src/tracking/model.ts';
 import { handFor, pickReps, type TeachStep } from '../client/src/tracking/teach.ts';
 import { segmentsOf, type Recording } from './eval-core.ts';
 
@@ -21,7 +21,6 @@ const teach = load(teachFile);
 const prompts = teach.marks.filter((m) => m.kind === 'teachStep');
 const segs = segmentsOf(teach).filter(passesGate);
 const samples: Sample[] = [];
-const straights: { hand: 'left' | 'right'; h: number; target: 'head' | 'body' }[] = [];
 let taught = 0;
 for (let i = 0; i < prompts.length; i++) {
   // The step as recorded: older sessions used other step ids and targets.
@@ -34,20 +33,16 @@ for (let i = 0; i < prompts.length; i++) {
   const { reps, rest } = pickReps(inWin, handFor(step.type!, teach.stance ?? 'orthodox'), 5);
   taught += reps.length;
   for (const x of rest) samples.push({ hand: x.hand, label: 'none', v: vector(x) });
-  for (const x of reps) {
-    samples.push({ hand: x.hand, label: kindOf(step.type!), v: vector(x) });
-    if (kindOf(step.type!) === 'straight') straights.push({ hand: x.hand, h: headHeight(x), target: step.target! });
-  }
+  for (const x of reps) samples.push({ hand: x.hand, label: kindOf(step.type!), v: vector(x) });
 }
 const model = new KnnModel(samples);
-const line = headLineFrom(straights);
 console.log(`teach: ${teachFile}\ntaught ${taught} reps, ${samples.length - taught} non-punch samples`);
 
 for (const f of playFiles) {
   const p = load(f);
   const from = p.marks.find((m) => m.kind === 'teachDone')?.t ?? p.frames[0].t;
   const c = new Classifier(p.calibration!);
-  c.model = (s) => model.decide(s, 'orthodox', line);
+  c.model = (s) => model.decide(s, 'orthodox');
   const fired: Punch[] = [];
   for (const fr of p.frames) {
     const out = c.update(fr);

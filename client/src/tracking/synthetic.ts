@@ -86,7 +86,7 @@ function armPose(hand: Hand, st: SynthState): ArmPose {
   if (k < 0 || k > punchDuration(p)) return { wrist: rest, pole: restPole };
 
   const shoulder: V = [s * 0.19, -0.45, 0];
-  const body = p.target === 'body';
+  // A body shot is the same arm motion thrown from a crouch (crouchOf lowers the whole body).
   const kind = p.type === 'jab' || p.type === 'cross' ? 'straight' : p.type.endsWith('Hook') ? 'hook' : 'uppercut';
 
   let wind: V;
@@ -94,20 +94,18 @@ function armPose(hand: Hand, st: SynthState): ArmPose {
   let pole: V;
   if (kind === 'straight') {
     wind = add(rest, [s * 0.02, 0.03, 0.1]);
-    const end = add(shoulder, mul(norm([-0.14 * s, body ? 0.32 : -0.08, -0.53]), 0.545));
+    const end = add(shoulder, mul(norm([-0.14 * s, -0.08, -0.53]), 0.545));
     path = (u) => lerp(wind, end, easeOut(u));
     pole = [s, 1, 0];
   } else if (kind === 'hook') {
     wind = add(rest, [s * 0.12, 0.04, 0.05]);
-    // A head hook ends a little above the nose on screen, so it clears the head line.
-    const dy = body ? 0.2 : -0.05;
-    const ctrl: V = [s * 0.42, -0.5 + dy, -0.34];
-    const end: V = [-s * 0.1, -0.52 + dy, -0.3];
+    const ctrl: V = [s * 0.42, -0.55, -0.34];
+    const end: V = [-s * 0.1, -0.57, -0.3];
     path = (u) => bez(wind, ctrl, end, easeOut(u));
     pole = [s, -0.15, 0.4];
   } else {
-    wind = [s * 0.12, body ? -0.12 : -0.22, -0.16];
-    const end: V = body ? [s * 0.03, -0.34, -0.32] : [s * 0.02, -0.66, -0.3];
+    wind = [s * 0.12, -0.22, -0.16];
+    const end: V = [s * 0.02, -0.66, -0.3];
     path = (u) => lerp(wind, end, easeOut(u));
     pole = [s * 0.4, 1, 0.3];
   }
@@ -123,15 +121,35 @@ function armPose(hand: Hand, st: SynthState): ArmPose {
 
 export interface SynthPose {
   world: Lm[];
-  /** Whole-body offset in metres (x toward the player's left, y down) for ducks and slips. */
+  /** Whole-body offset in metres (x toward the player's left, y down) for ducks, crouched punches and slips. */
   offset: [number, number];
+}
+
+/** How deep a body punch crouches, as a fraction of a full duck. */
+export const BODY_CROUCH = 0.85;
+
+/**
+ * 0 to 1 crouch at this moment: a full duck, or a body punch, which dips the head over the
+ * wind-up and the first part of the extension, holds it to the peak, and comes back up on the
+ * retraction.
+ */
+export function crouchOf(st: SynthState): number {
+  const duck = st.defense.duck ? 1 : 0;
+  const p = st.punch;
+  if (!p || p.target !== 'body') return duck;
+  const k = st.t - p.startT;
+  if (k < 0 || k > punchDuration(p)) return duck;
+  const down = Math.max(80, p.windupMs + PUNCH_TIMING.extendMs * 0.5);
+  const up = punchDuration(p) - PUNCH_TIMING.retractMs;
+  const c = k < down ? easeInOut(k / down) : k < up ? 1 : 1 - easeInOut((k - up) / PUNCH_TIMING.retractMs);
+  return Math.max(duck, BODY_CROUCH * c);
 }
 
 export function synthPose(st: SynthState): SynthPose {
   const pts: V[] = Array.from({ length: 33 }, () => [0, 0, 0]);
-  const duck = st.defense.duck;
+  const crouch = crouchOf(st);
   const slip = st.defense.slip === 'left' ? 1 : st.defense.slip === 'right' ? -1 : 0;
-  const lean = duck ? 0.1 : 0;
+  const lean = 0.1 * crouch;
   const headX = slip * 0.06;
 
   pts[L.lHip] = [0.1, 0, 0];
@@ -161,18 +179,19 @@ export function synthPose(st: SynthState): SynthPose {
     pts[i] = add(pts[hip], [0, i < 27 ? 0.45 : 0.9, 0]);
   }
   const world = pts.map(([x, y, z]) => ({ x, y, z, v: 1 }));
-  return { world, offset: [slip * 0.2, duck ? 0.3 : 0] };
+  return { world, offset: [slip * 0.2, 0.3 * crouch] };
 }
 
 /** Projects a synthetic pose through a pinhole camera to build a full PoseFrame. */
 export function synthFrame(st: SynthState): PoseFrame {
   const { world, offset } = synthPose(st);
+  // The whole-body offset moves every point by the same amount on screen (as seen at body depth),
+  // so a crouch lowers an extended fist as much as the shoulders and keeps the punch shape.
   const img = world.map((p, i) => {
     const headish = i <= 10;
     const ox = offset[0] * (headish ? 1 : 0.5);
-    const X = p.x + ox, Y = p.y + offset[1], Z = p.z;
-    const d = CAM_DIST + Z;
-    return { x: SYNTH_ASPECT / 2 + (FOCAL * X) / d, y: CENTRE_Y + (FOCAL * (Y - CAM_Y)) / d, z: Z, v: 1 };
+    const d = CAM_DIST + p.z;
+    return { x: SYNTH_ASPECT / 2 + (FOCAL * p.x) / d + (FOCAL * ox) / CAM_DIST, y: CENTRE_Y + (FOCAL * (p.y - CAM_Y)) / d + (FOCAL * offset[1]) / CAM_DIST, z: p.z, v: 1 };
   });
   return { t: st.t, img, world };
 }

@@ -1,13 +1,14 @@
 // End-to-end accuracy of the per-player calibration on the recorded data, scored against the
 // hand-checked reps in scripts/eval-gt.ts. Every number replays the live Classifier frame by frame
-// with a model trained the way the guided calibration would train it.
+// with a model trained the way the guided calibration would train it. Every recorded rep was thrown
+// standing (even the ones aimed low), so under the crouch rule each one is scored as a head shot.
 // Usage: npx tsx scripts/eval-calibration.ts [--verbose]
 import { readFileSync } from 'node:fs';
 import type { Hand, Punch, PunchType, Target } from '../shared/types.ts';
 import { CONFIG } from '../client/src/config.ts';
 import { Classifier, passesGate, type Segment } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
-import { KnnModel, headHeight, headLineFrom, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
+import { KnnModel, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
 import { handFor, pickReps, pruneOutliers, type TeachStep } from '../client/src/tracking/teach.ts';
 import { loadFixtures, segmentsOf, type Recording } from './eval-core.ts';
 import { FIXTURE_REPS, TEACH_REPS, TEACH_SESSION } from './eval-gt.ts';
@@ -28,8 +29,7 @@ function train(taught: Taught[]): Decide {
   const samples = kept.map((x) => ({ hand: x.seg.hand, label: x.label, v: vector(x.seg), ...(x.type ? { target: x.target } : {}) }));
   if (!samples.some((s) => s.label !== 'none')) return () => null;
   const m = new KnnModel(samples);
-  const line = headLineFrom(kept.filter((x) => x.label === 'straight').map((x) => ({ hand: x.seg.hand, h: headHeight(x.seg), target: x.target })));
-  return (s) => m.decide(s, 'orthodox', line);
+  return (s) => m.decide(s, 'orthodox');
 }
 /** What the live teacher would have taken as reps from one prompt's motions. */
 function teacherPick(segs: Segment[], hand: Hand, n: number): Segment[] {
@@ -105,7 +105,7 @@ const fixtures: Clip[] = loadFixtures().map(({ file, rec }) => {
   const id = file.replace(/^(orthodox|southpaw)-/, '').replace('.json', '');
   const type = rec.expected?.[0];
   const times = FIXTURE_REPS[id] ?? [];
-  return { name: id, rec, reps: type ? times.map((t) => ({ hand: handFor(type, rec.stance ?? 'orthodox'), type, target: rec.expectedTarget ?? 'head', t })) : [] };
+  return { name: id, rec, reps: type ? times.map((t) => ({ hand: handFor(type, rec.stance ?? 'orthodox'), type, target: 'head' as Target, t })) : [] };
 });
 const segCache = new Map<Clip, Segment[]>();
 const segsOf = (c: Clip) => segCache.get(c) ?? (segCache.set(c, segmentsOf(c.rec)), segCache.get(c)!);
@@ -181,7 +181,7 @@ print('leave one rep out (4-shot)', fixtureLoo());
 const sessionFile = `tests/fixtures/sessions/${TEACH_SESSION}`;
 const sess = JSON.parse(readFileSync(sessionFile, 'utf8')) as Recording & { marks: { t: number; kind: string; data?: Partial<TeachStep> }[] };
 const st0 = sess.frames[0].t;
-const sreps = TEACH_REPS.map((r) => ({ ...r, hand: handFor(r.type, 'orthodox') }));
+const sreps = TEACH_REPS.map((r) => ({ ...r, target: 'head' as Target, hand: handFor(r.type, 'orthodox') }));
 const ssegs = segmentsOf(sess);
 const sl = label(ssegs, sreps, st0);
 const prompts = sess.marks.filter((m) => m.kind === 'teachStep');
@@ -206,7 +206,7 @@ const teachFrom = prompts[0].t, teachTo = prompts.find((m) => m.data?.kind === '
       continue;
     }
     const picked = teacherPick(inWin, handFor(step.type!, 'orthodox'), 5);
-    tl.push(...inWin.map((seg) => ({ seg, type: picked.includes(seg) ? step.type! : null, target: step.target! })));
+    tl.push(...inWin.map((seg) => ({ seg, type: picked.includes(seg) ? step.type! : null, target: 'head' as Target })));
   }
   const sc2 = newScore();
   for (const r of sreps) {
