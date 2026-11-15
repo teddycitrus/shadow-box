@@ -8,6 +8,7 @@ import { ProceduralAvatar, type Avatar } from '../scene/avatar.ts';
 import { FirstPersonGloves, Sparks } from '../scene/fp.ts';
 import { Stage } from '../scene/stage.ts';
 import { KEY_HELP, type InputSource } from '../tracking/input.ts';
+import type { TeachStatus } from '../tracking/teach.ts';
 import { commonEvent } from '../ui/announce.ts';
 import { button, flag, go, h } from '../ui/dom.ts';
 import { Hud } from '../ui/hud.ts';
@@ -16,6 +17,7 @@ import type { SessionLog } from '../tracking/session.ts';
 import { WebcamBox } from '../ui/webcam.ts';
 
 const EYE = new THREE.Vector3(0, 1.58, 0.8);
+const RESULTS_MS = 8_000;
 const OPP_Z = -0.95;
 
 export interface PlayerOptions {
@@ -81,6 +83,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
   });
   const skipTeach = button('Skip, use defaults', () => input.skipTeach(), 'ghost');
   const learnedNote = h('div', { class: 'learned' });
+  const weakNote = h('div', { class: 'learned weak' });
   const teachBox = h('div', { class: 'teach' });
   webcam.root.append(teachBox);
   const players = h('div', { class: 'players' });
@@ -104,7 +107,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
   const lobby = h('div', { class: 'panel lobby' },
     h('h2', {}, opts.practice ? 'Practice' : 'Fight lobby'),
     share,
-    h('div', { class: 'calib' }, status, progress, learnedNote),
+    h('div', { class: 'calib' }, status, progress, learnedNote, weakNote),
     players,
     h('div', { class: 'row' }, stanceBtn, input.kind === 'camera' ? recal : null),
     input.kind === 'camera' ? h('div', { class: 'row' }, reteach, skipTeach) : null,
@@ -170,7 +173,56 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
   let shake = 0;
   let downK = 0;
   let wasCalibrated = false;
+  let wasTeaching = false;
+  let resultsUntil = 0;
   const tmp = new THREE.Vector3();
+
+  let teachKey = '';
+  function renderTeach(ts: TeachStatus): void {
+    // Rebuild only when something but the timer changed, so the result pop animation can play.
+    const key = JSON.stringify([ts.phase, ts.index, ts.step?.id, ts.reps, ts.verify, ts.scores]);
+    if (key === teachKey) {
+      const bar = teachBox.querySelector<HTMLElement>('.teach-time i');
+      if (bar) bar.style.width = `${(1 - ts.progress) * 100}%`;
+      return;
+    }
+    teachKey = key;
+    const timer = h('div', { class: 'teach-time' }, h('i', { style: `width:${(1 - ts.progress) * 100}%` }));
+    if (ts.phase === 'verify' && ts.verify) {
+      const v = ts.verify;
+      status.textContent = `Check ${v.passed} of ${v.moves}`;
+      (progress.firstChild as HTMLElement).style.width = `${v.moves ? (v.passed / v.moves) * 100 : 0}%`;
+      const chips = ts.scores.map((m) => h('i', { class: m.ok >= CONFIG.model.verifyPasses ? 'ok' : m.tries > m.ok ? 'bad' : '', title: m.prompt }));
+      const head = h('div', { class: 'teach-step' }, `Check ${v.passed} / ${v.moves}`);
+      const chipRow = h('div', { class: 'teach-chips' }, ...chips);
+      if (v.result) teachBox.replaceChildren(head, h('div', { class: `teach-result ${v.result.ok ? 'ok' : 'bad'}` }, v.result.text), chipRow, h('div', { class: 'teach-time' }));
+      else teachBox.replaceChildren(head, h('div', { class: 'teach-move' }, v.prompt || 'Ready'), h('div', { class: 'teach-how' }, v.prompt ? 'Throw it once, then back to guard' : 'Get in your guard'), chipRow, timer);
+      return;
+    }
+    if (!ts.step) return;
+    status.textContent = `Teaching ${ts.index + 1} of ${ts.total}`;
+    (progress.firstChild as HTMLElement).style.width = `${(ts.index / ts.total) * 100}%`;
+    const dots = ts.repsNeeded ? Array.from({ length: ts.repsNeeded }, (_, i) => h('i', { class: i < ts.reps ? 'on' : '' })) : [];
+    teachBox.replaceChildren(
+      h('div', { class: 'teach-step' }, `${ts.index + 1} / ${ts.total}`),
+      h('div', { class: 'teach-move' }, ts.step.prompt),
+      h('div', { class: 'teach-how' }, ts.step.how),
+      h('div', { class: 'teach-dots' }, ...dots),
+      timer,
+    );
+  }
+
+  function renderResults(): void {
+    teachKey = '';
+    const right = input.scores.reduce((n, m) => n + m.ok, 0);
+    const tries = input.scores.reduce((n, m) => n + m.tries, 0);
+    teachBox.replaceChildren(
+      h('div', { class: 'teach-step' }, `${right} / ${tries} read right`),
+      h('div', { class: 'teach-move' }, 'Calibrated'),
+      h('div', { class: 'teach-scores' }, ...input.scores.map((m) =>
+        h('div', { class: m.ok >= CONFIG.model.verifyPasses ? 'ok' : 'bad' }, h('span', {}, m.prompt), h('b', {}, `${m.ok}/${m.tries}`)))),
+    );
+  }
 
   link.handlers = {
     lobby(ps: [LobbyPlayer | null, LobbyPlayer | null], spectators: number) {
@@ -301,17 +353,8 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       webcam.draw(input.frame, input.video, good);
       const ts = input.teach;
       const teaching = !!ts && !ts.done && !good;
-      if (teaching && ts.step) {
-        status.textContent = `Teaching ${ts.index + 1} of ${ts.total}`;
-        (progress.firstChild as HTMLElement).style.width = `${(ts.index / ts.total) * 100}%`;
-        const dots = ts.repsNeeded ? Array.from({ length: ts.repsNeeded }, (_, i) => h('i', { class: i < ts.reps ? 'on' : '' })) : [];
-        teachBox.replaceChildren(
-          h('div', { class: 'teach-step' }, `${ts.index + 1} / ${ts.total}`),
-          h('div', { class: 'teach-move' }, ts.step.prompt),
-          h('div', { class: 'teach-how' }, ts.step.kind === 'punch' ? `Throw it ${ts.repsNeeded} times, back to guard after each` : 'Do it once or twice, then come back'),
-          h('div', { class: 'teach-dots' }, ...dots),
-          h('div', { class: 'teach-time' }, h('i', { style: `width:${(1 - ts.progress) * 100}%` })),
-        );
+      if (teaching) {
+        renderTeach(ts);
       } else if (!good && s) {
         status.textContent = s.stage === 'framing' ? s.message : s.stage === 'hold' ? s.message : 'Calibrated';
         (progress.firstChild as HTMLElement).style.width = `${s.stage === 'hold' ? s.progress * 100 : 0}%`;
@@ -319,8 +362,17 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
         status.textContent = 'Calibrated. Throw a few punches to check tracking.';
         (progress.firstChild as HTMLElement).style.width = '100%';
       }
-      teachBox.classList.toggle('on', teaching);
+      if (wasTeaching && !teaching && good && input.scores.length) {
+        resultsUntil = performance.now() + RESULTS_MS;
+        renderResults();
+      }
+      wasTeaching = teaching;
+      const showResults = !teaching && performance.now() < resultsUntil;
+      teachBox.classList.toggle('on', teaching || showResults);
+      teachBox.classList.toggle('results', showResults);
       learnedNote.textContent = good ? (input.learned.length ? `Using your own model: ${input.learned.length} punches learned` : 'Using the default rules') : '';
+      const weak = good ? input.scores.filter((m) => m.ok < CONFIG.model.verifyPasses) : [];
+      weakNote.textContent = weak.length ? `Read back less reliably: ${weak.map((m) => `${m.prompt} ${m.ok}/${m.tries}`).join(', ')}` : '';
       reteach.toggleAttribute('disabled', !good);
       skipTeach.hidden = !teaching;
       if (good !== wasCalibrated) {

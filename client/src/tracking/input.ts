@@ -1,9 +1,8 @@
 import { NO_DEFENSE, WIRE_LANDMARKS, type DefenseState, type Hand, type Punch, type PunchType, type Stance, type WirePose } from '../../../shared/types.ts';
-import { CONFIG } from '../config.ts';
 import { Calibrator, looksLikeGuard, type Calibration, type CalibrationStatus } from './calibration.ts';
 import { Classifier, type ClassifierOutput } from './classifier.ts';
 import { SessionLog } from './session.ts';
-import { Teacher, modelFrom, type Profile, type TeachStatus } from './teach.ts';
+import { Teacher, modelFrom, type MoveScore, type Profile, type TeachStatus } from './teach.ts';
 import type { Lm, PoseFrame } from './frame.ts';
 import { PoseTracker } from './pose.ts';
 import { PUNCH_TIMING, punchDuration, synthPose, type SynthPunch } from './synthetic.ts';
@@ -31,6 +30,8 @@ export interface InputSource {
   readonly teach: TeachStatus | null;
   /** Moves learned for this player, empty when using the default rules. */
   readonly learned: string[];
+  /** How well each move was read back in the last calibration's verify phase. */
+  readonly scores: MoveScore[];
   onTick: (t: InputTick) => void;
   start(): Promise<void>;
   recalibrate(): void;
@@ -41,7 +42,7 @@ export interface InputSource {
 }
 
 /** Bump when the feature vector changes so old profiles are not reused. */
-const PROFILE_KEY = 'shadowbox:profile:v3';
+const PROFILE_KEY = 'shadowbox:profile:v4';
 
 export const SW_METRES = 0.38;
 
@@ -67,9 +68,11 @@ export class CameraInput implements InputSource {
   private teacher: Teacher | null = null;
   teach: TeachStatus | null = null;
   learned: string[] = [];
+  scores: MoveScore[] = [];
   /** Dev-only session recording, enabled with ?debug=1 on the Vite dev server. */
   readonly log: SessionLog | null = import.meta.env.DEV && new URLSearchParams(location.search).get('debug') === '1' ? new SessionLog() : null;
   private lastTeachIndex = -1;
+  private lastTeachKey = '';
   private lastDefenseKey = '';
 
   get calibrated(): boolean {
@@ -85,6 +88,8 @@ export class CameraInput implements InputSource {
   }
 
   async start(): Promise<void> {
+    // Dev server only: lets scripted UI checks feed synthetic poses instead of the webcam.
+    if (import.meta.env.DEV) (globalThis as { __input?: CameraInput }).__input = this;
     this.tracker.onFrame = (f) => this.handle(f);
     await this.tracker.start();
   }
@@ -99,11 +104,13 @@ export class CameraInput implements InputSource {
 
   reteach(): void {
     if (!this.classifier) return;
-    this.teacher = new Teacher(this.stance);
+    const teacher = new Teacher(this.stance);
+    this.teacher = teacher;
     this.lastTeachIndex = -1;
+    this.lastTeachKey = '';
     this.log?.mark(performance.now(), 'teachStart');
     const c = this.classifier;
-    c.model = () => null;
+    c.model = (seg) => teacher.decide(seg);
     c.onSegment = (seg) => this.teacher?.segment(seg);
   }
 
@@ -112,6 +119,7 @@ export class CameraInput implements InputSource {
     this.teacher = null;
     this.teach = null;
     this.learned = [];
+    this.scores = [];
     if (this.classifier) {
       this.classifier.model = undefined;
       this.classifier.onSegment = undefined;
@@ -121,11 +129,20 @@ export class CameraInput implements InputSource {
   private apply(p: Profile): void {
     const c = this.classifier!;
     const m = modelFrom(p);
-    const split = p.bodySplit ?? CONFIG.punch.headBodySplit;
-    c.model = m ? (seg) => m.decide(seg, this.stance, split) : undefined;
+    c.model = m ? (seg) => m.decide(seg, this.stance, p.bodySplit) : undefined;
     c.onSegment = undefined;
     c.defenseThresholds = { ...p.defense };
     this.learned = p.learned;
+    this.scores = p.scores ?? [];
+  }
+
+  private loadProfile(): Profile | null {
+    try {
+      const p = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? 'null') as Profile | null;
+      return p && p.version === 4 && Array.isArray(p.samples) ? p : null;
+    } catch {
+      return null;
+    }
   }
 
   private handle(f: PoseFrame | null): void {
@@ -136,14 +153,17 @@ export class CameraInput implements InputSource {
       if (this.status.stage === 'done') {
         this.calibration = this.status.cal;
         this.classifier = new Classifier(this.status.cal);
+        this.classifier.onDecision = (seg, p, why) => {
+          this.teacher?.decision(seg, p);
+          this.log?.mark(seg.endT, 'decision', { seg: { ...seg, path: undefined }, punch: p, why });
+        };
         if (this.log) {
           this.log.calibration = this.status.cal;
           this.log.mark(f?.t ?? 0, 'calibrated', this.status.cal);
-          this.classifier.onDecision = (seg, p, why) => this.log!.mark(seg.endT, 'decision', { seg, punch: p, why });
           this.classifier.onIgnored = (hand, t, why) => this.log!.mark(t, 'ignored', { hand, why });
         }
-        const saved = localStorage.getItem(PROFILE_KEY);
-        if (saved) this.apply(JSON.parse(saved) as Profile);
+        const saved = this.loadProfile();
+        if (saved) this.apply(saved);
         else this.reteach();
       }
       if (f) this.onTick({ pose: toWire(f.world, [0, 0]), defense: { ...NO_DEFENSE, guard: looksLikeGuard(f) }, punches: [] });
@@ -163,13 +183,15 @@ export class CameraInput implements InputSource {
     const feat = out.features!;
     if (this.teacher) {
       this.teach = this.teacher.update(f.t, feat);
-      if (this.teach.index !== this.lastTeachIndex) {
+      const key = `${this.teach.index}:${this.teach.phase === 'verify' ? this.teach.step?.id ?? '' : ''}`;
+      if (this.teach.index !== this.lastTeachIndex || key !== this.lastTeachKey) {
         this.lastTeachIndex = this.teach.index;
-        this.log?.mark(f.t, 'teachStep', this.teach.step);
+        this.lastTeachKey = key;
+        if (this.teach.step) this.log?.mark(f.t, this.teach.phase === 'verify' ? 'verifyStep' : 'teachStep', this.teach.step);
       }
       if (this.teach.done) {
         const p = this.teacher.profile();
-        this.log?.mark(f.t, 'teachDone', { learned: p.learned, defense: p.defense });
+        this.log?.mark(f.t, 'teachDone', { learned: p.learned, defense: p.defense, scores: p.scores });
         void this.log?.save('teach', { stance: this.stance, profile: p });
         localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
         this.teacher = null;
@@ -214,6 +236,7 @@ export class KeyInput implements InputSource {
   readonly stats = 'keyboard';
   readonly teach = null;
   readonly learned = [];
+  readonly scores = [];
   reteach(): void {}
   skipTeach(): void {}
   onTick: (t: InputTick) => void = () => {};

@@ -26,10 +26,16 @@ A browser boxing game you play with your body. A webcam and MediaPipe pose track
 
 1. Pick Orthodox or Southpaw first. Teaching uses your stance to know which hand throws the jab.
 2. Hold your guard (both gloves up by your face) steady for 2 seconds. The game measures your shoulder width, arm length, hand size and guard position and scales every threshold to your body.
-3. Teach your punches, about 60 s. An overlay on the webcam prompts 8 punches in turn: jab, cross, left hook, right hook, left uppercut, right uppercut, jab to the body, cross to the body. Throw each one 3 times, back to guard after each (a step moves on after 3 reps or 9 s). Then duck, slip left and slip right, 3.5 s each. Punches do not count during this step.
+3. Teach your punches, about two and a half minutes. An overlay on the webcam walks through:
+   - **Rest**, 6 s each: guard up and moving without punching, then dropping your hands and bringing them back. These motions are learned as non-punches.
+   - **8 punches** in turn: jab, cross, left hook, right hook, left uppercut, right uppercut, jab to the body, cross to the body. Throw each one 5 times, back to guard after each (a step moves on after 5 reps or 15 s). Wind-ups and fidgets around each rep are learned as non-punches, and a rep far from the rest of its move is dropped.
+   - **Duck, slip left, slip right**, 3.5 s each.
+   - **Check**: random punches from the list are prompted and read back live with your new model. A wrong or missed read is taught on the spot with the right label, and the move comes back until it is read right twice (at most 4 tries). The overlay ends with how often each move was read right; the lobby lists any move that stayed unreliable.
+
+   Punches do not reach the match during this step.
 4. Press Ready.
 
-The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v3`) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
+The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v4`) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
 
 ### Moves
 
@@ -39,12 +45,12 @@ The result is a personal profile, saved in the browser (`localStorage` key `shad
 | Cross | Punch straight at the camera with your rear hand. |
 | Left / right hook | Elbow bent, hand around shoulder height, swing across. |
 | Left / right uppercut | Start below your chin and drive the fist up. |
-| Head or body | With a taught profile, learned from your head and body jab and cross reps (hooks and uppercuts are taught to the head). With the default rules, decided by wrist height at the peak of the punch: above a line just under your shoulders is a head shot, below it is a body shot. |
+| Head or body | Decided by wrist height at the peak of a straight. With a taught profile the line sits midway between your own head and body reps, per hand (hooks and uppercuts are taught to the head). With the default rules it is a fixed line just above your shoulders. |
 | High guard | Both gloves up by your face. |
 | Duck | Drop your head well down. |
 | Slip left / right | Move your head to the side. |
 
-A punch fires once, at peak extension. That hand is locked until it returns to guard and a short cooldown passes (250 ms, 450 ms when gassed).
+A punch fires once, at its furthest point. That hand is locked until it comes back toward where it started (or settles somewhere new) and a short cooldown passes (250 ms, 450 ms when gassed).
 
 ### Rules
 
@@ -186,10 +192,10 @@ Hard limits:
 flowchart LR
   F(["PoseFrame"])
   SM["Smoothing<br/><sub>image 0.6, world z 0.45</sub>"]
-  SEG["Per-hand segmenter<br/><sub>start on speed, peak at max extension</sub>"]
-  G{"Gate<br/><sub>travel and elbow opening</sub>"}
+  SEG["Per-hand segmenter<br/><sub>excursion from rest, peak at furthest point</sub>"]
+  G{"Gate<br/><sub>travel, speed, one hand only</sub>"}
   Q{"Profile with<br/>learned punches?"}
-  K["Per-player k-NN<br/><sub>k = 3, from the teach step</sub>"]
+  K["Per-player k-NN<br/><sub>k = 1, from the teach step</sub>"]
   R["Hand-written rules<br/><sub>uppercut, hook, straight</sub>"]
   P(["Punch event<br/><sub>at = peak time</sub>"])
   X["No punch"]
@@ -210,10 +216,11 @@ flowchart LR
 
 Punch pipeline, per hand:
 
-1. **Segment:** a motion starts when hand speed reaches 3.0 sw/s. The peak is the frame with the highest extension score (3D reach, depth toward the camera, on-screen hand growth and distance travelled). The motion ends when speed drops below 35% of its maximum, or after 450 ms.
-2. **Gate:** the motion must travel at least 0.45 sw and the elbow must open by at least 15 degrees. Anything else is not a punch, whichever classifier is active.
-3. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 16-number feature vector of the motion (sideways sweep, rise, depth, elbow angles, wrist height, distance to the head, travel, speed, duration) against the player's own taught samples of the same hand, standardized and with distance-weighted votes. Labels are `type:target` or `none`, so the teach step also learns which motions are not punches (returning to guard, adjusting). Without a profile the hand-written rules decide.
-4. **Fire:** the punch is sent with the peak time. The hand stays locked until it is back near the face and the cooldown has passed.
+1. **Track:** each hand is followed on screen in its own frame: origin between the shoulders, x toward the body midline (mirrored for the left hand so both hands share one frame), y up, in sw. While the hand is slower than 1.5 sw/s its rest position follows it.
+2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. The motion ends when the hand comes back to 80% of that distance, stalls for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts) or has settled for 350 ms, so a retraction never becomes a motion of its own.
+3. **Gate:** the motion must travel at least 0.55 sw and reach 4 sw/s. A mostly vertical motion while the other hand moves the same way by at least 60% as much (raising or dropping the guard) is not a punch. This applies whichever classifier is active.
+4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the learned height line gives head or body. Without a profile the hand-written rules decide.
+5. **Fire:** the punch is sent with the peak time.
 
 Defense, every frame:
 
@@ -221,7 +228,7 @@ Defense, every frame:
 - **Duck and slip** fire when the offset passes 0.55 sw down or 0.5 sw sideways. The teach step personalizes each to half of the deepest duck or slip you showed, if it reached at least 60% of the default, and never below half the default. Slips are ignored during a hand motion and for 300 ms after, since punching moves the head.
 - **Guard** needs both hands out of a motion, slow and up by the face. The height and head-distance limits are the defaults or, if looser, your calibrated guard position plus 0.3 sw, with 0.2 sw of hysteresis once held.
 
-On the 12 recorded clips in `tests/fixtures/` (one orthodox player), the hand-written rules get 19% of gated punches exactly right. The per-player k-NN gets 81% in leave-one-out, and 82% exact with 1 false fire in 13 non-punch motions when trained, as in the teach step, on the first 3 reps of each clip. Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
+Accuracy is measured against hand-checked rep times (`scripts/eval-gt.ts`) on the 12 recorded clips in `tests/fixtures/` (one orthodox player, 39 reps) and on a real teach session (22 reps), replaying the live classifier frame by frame (`scripts/eval-calibration.ts`). Trained on 4 of 5 reps per move, 87% of fixture punches come out exactly right (type and head/body) with 1 extra fire, and the 4 defense clips fire nothing; trained on the first 3 reps, 73%. On the teach session, where most moves only got two real reps, 59% exact and 77% of types right. The segmenter finds 35 of 39 fixture reps at full frame rate, 35 at half and 31 at a third (`scripts/eval-speed.ts`). Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
 
 ## Getting Started
 
@@ -273,7 +280,10 @@ npm run typecheck # tsc for the client, server and shared code, then for worker/
 These scripts replay the recorded clips in `tests/fixtures/` through the classifier. Recording clips is covered in [FIXTURES.md](FIXTURES.md).
 
 ```sh
-npx tsx scripts/eval-model.ts --verbose    # rules vs k-NN: leave-one-out and simulated 2/3-rep calibrations
+npx tsx scripts/eval-calibration.ts        # end to end: replayed calibrations scored against hand-checked reps
+npx tsx scripts/eval-model.ts --verbose    # k-NN leave-one-out per motion, fixtures and teach session
+npx tsx scripts/eval-speed.ts              # reps caught and read with frames dropped
+npx tsx scripts/eval-session.ts            # train on a teach session, replay a play session
 npx tsx scripts/eval-defense.ts            # guard, duck and slip onsets per clip
 npx tsx scripts/dump-segments.ts jab-head  # every motion segment's features in matching clips
 npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense change, --trace for per-frame features

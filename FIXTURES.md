@@ -72,27 +72,38 @@ Then run `npm test`.
   - `world` holds the same 33 landmarks in MediaPipe world space, in metres.
   - Each landmark is `{x, y, z, v}`, where `v` is visibility.
 
+## Ground truth
+
+Labels do not come from the classifier. `scripts/eval-gt.ts` lists the peak time of every real rep in each punch clip (and in the recorded teach session in `tests/fixtures/sessions/`), found from the wrist's distance to its guard position and checked frame by frame. When you record new clips, add their rep times there; a clip without an entry is scored as having no reps.
+
 ## What the tests assert
 
 The "recorded fixtures" block in `tests/classifier.test.ts` loads every `.json` file in `tests/fixtures/` that has a calibration and at least one frame (`loadFixtures` in `scripts/eval-core.ts`). It skips itself when there are none.
 
-Labelling: each clip is replayed with the classifier's `onSegment` hook to collect every motion that passes the gate. In a punch clip, the `reps` strongest motions of the expected hand (ranked by peak speed times travel, at least 450 ms apart) get the label `<type>:<expectedTarget>`; every other gated motion is labelled `none`.
+Labelling: each clip is replayed with the classifier's `onSegment` hook to collect every motion that passes the gate. Each hand-checked rep labels the motion of the punching hand whose peak is closest to it (within 350 ms) with its punch kind (`straight`, `hook` or `uppercut`) and target; every other gated motion is a non-punch.
 
-- **Model:** simulates the teach step chronologically. In each clip, the first 3 labelled reps and every motion before the third one ends train a k-NN with k = 3; the rest is the test set (clips without punches split in half). The test requires at least 70% of test punches classified exactly (type and target) and at most 25% of test non-punch motions firing as a punch.
+- **Motions:** at least 85% of the hand-checked reps are found as gated motions.
+- **Model:** simulates the teach step chronologically. In each clip, the first 3 labelled reps and every motion before the third one ends train the k-NN; the rest is the test set (clips without punches split in half). The test requires at least 85% of test punches exactly right (type and head/body) and at most 10% of test non-punch motions firing. With 2 reps it requires 70% and 10%.
 - **Defense:** replays the `guard`, `duck`, `slip-left` and `slip-right` clips (found by file name) and counts onsets. It needs at least 4 guards, 4 ducks, 3 left slips and 3 right slips.
 - **Accidental ducks:** across all punch clips, the total number of duck onsets must be at most a quarter of the number of punch clips.
 
 ## Evaluating and tuning
 
 ```sh
+npx tsx scripts/eval-calibration.ts --verbose
 npx tsx scripts/eval-model.ts --verbose
+npx tsx scripts/eval-speed.ts
+npx tsx scripts/eval-session.ts
 npx tsx scripts/eval-defense.ts
 npx tsx scripts/dump-segments.ts jab-head
 ```
 
-- `eval-model.ts` prints how many motions pass the gate, then punch exact and false-fire counts for the hand-written rules, k-NN leave-one-out with k = 1, 3 and 5, randomized 2-rep and 3-rep calibrations, and the chronological 2-rep and 3-rep calibrations the test uses. `--verbose` adds the labelled peak times per clip and a confusion list for each classifier.
+- `eval-calibration.ts` is the end-to-end score: it replays the live classifier frame by frame with a model trained the way the guided calibration trains it, and scores every fired punch against the hand-checked reps. It reports chronological 2-rep and 3-rep calibrations (with oracle labels and with the teacher's own rep picking), leave one rep out (4 of 5 reps per move), false fires in the defense clips, and leave one rep out on the recorded teach session. `--verbose` lists every confusion, and whether a missed rep was never seen as a motion or rejected as a non-punch. `--no-prune` turns off the outlier rejection of taught reps.
+- `eval-model.ts` classifies every gated motion leave-one-out (fast, for tuning features and model settings).
+- `eval-speed.ts` drops frames (every 2nd, every 3rd) and reports how many reps are still found and read right.
+- `eval-session.ts` trains on a saved teach session and replays the play part of a saved play session, listing what fired.
 - `eval-defense.ts` prints guard, duck, left slip and right slip onsets per clip, and the share of frames in guard.
 - `dump-segments.ts <filter> [minTravel]` prints the features of every motion segment in clips whose name contains `<filter>`, for segments travelling at least `minTravel` shoulder widths (default 0.45).
-- `analyze-fixtures.ts [filter] [--trace]` prints every rule decision and defense change per clip; `--trace` adds per-frame hand features.
+- `analyze-fixtures.ts [filter] [--trace]` prints every decision and defense change per clip; `--trace` adds per-frame hand features.
 
 Thresholds for smoothing, segmentation, the gate, the rules, the model and defense live in `client/src/config.ts`. After changing them, run `npm test` to make sure the synthetic cases and every fixture still pass.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { labelledSegments, loadFixtures, scoreCalibration, type Recording } from '../scripts/eval-core.ts';
+import { fixtureReps, labelledSegments, loadFixtures, scoreCalibration, type Recording } from '../scripts/eval-core.ts';
 import { Calibrator, framingCheck, measure } from '../client/src/tracking/calibration.ts';
 import { Classifier } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
@@ -55,7 +55,9 @@ describe('calibration and framing', () => {
 
   it('asks to move closer or step back', () => {
     const f = synthFrame({ t: 0, defense: GUARD });
-    const scaled = (k: number): PoseFrame => ({ ...f, img: f.img.map((p) => ({ ...p, x: 0.9 + (p.x - 0.9) * k, y: 0.5 + (p.y - 0.5) * k })) });
+    // Stepping toward or away from the camera scales the body (here around the head, so it stays in frame).
+    const c = f.img[0];
+    const scaled = (k: number): PoseFrame => ({ ...f, img: f.img.map((p) => ({ ...p, x: c.x + (p.x - c.x) * k, y: c.y + (p.y - c.y) * k })) });
     expect(framingCheck(f)).toBeNull();
     expect(framingCheck(scaled(0.4))).toBe('Move closer');
     expect(framingCheck(scaled(2))).toBe('Step back');
@@ -113,14 +115,14 @@ describe('punch classification', () => {
 });
 
 describe('defense', () => {
-  const hold = (def: DefenseState) => run(Array.from({ length: 20 }, (_, i) => ({ t: i * 33, defense: def }))).defenses.at(-1)!;
+  const hold = (def: DefenseState, gassed = false) => run(Array.from({ length: 20 }, (_, i) => ({ t: i * 33, defense: def, gassed }))).defenses.at(-1)!;
   it('detects guard', () => expect(hold(GUARD)).toEqual(GUARD));
   it('detects duck', () => expect(hold({ ...NO_DEFENSE, duck: true }).duck).toBe(true));
   it('detects slips by side', () => {
     expect(hold({ ...NO_DEFENSE, slip: 'left' }).slip).toBe('left');
     expect(hold({ ...NO_DEFENSE, slip: 'right' }).slip).toBe('right');
   });
-  it('hands down is no guard', () => expect(hold(NO_DEFENSE).guard).toBe(false));
+  it('dropped hands are no guard', () => expect(hold(NO_DEFENSE, true).guard).toBe(false));
 });
 
 describe('recorded fixtures (tests/fixtures, see FIXTURES.md)', () => {
@@ -128,12 +130,25 @@ describe('recorded fixtures (tests/fixtures, see FIXTURES.md)', () => {
   const byName = (id: string) => fixtures.find((f) => f.file.endsWith(`-${id}.json`));
   if (!fixtures.length) it.skip('no recorded fixtures yet', () => {});
 
-  it.skipIf(!fixtures.some((f) => f.rec.expected?.length))('the per-player model learns real punches from a 3-rep calibration', () => {
-    const segs = fixtures.flatMap(({ file, rec }) => labelledSegments(file, rec));
+  const hasPunches = fixtures.some((f) => f.rec.expected?.length);
+  const segs = hasPunches ? fixtures.flatMap(({ file, rec }) => labelledSegments(file, rec)) : [];
+
+  it.skipIf(!hasPunches)('finds nearly every hand-checked rep as a motion', () => {
+    const reps = fixtures.reduce((n, f) => n + fixtureReps(f.file).length, 0);
+    expect(segs.filter((s) => s.label !== 'none').length / reps).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it.skipIf(!hasPunches)('the per-player model learns real punches from a 3-rep calibration', () => {
     const s = scoreCalibration(segs, 3);
     expect(s.punches).toBeGreaterThan(0);
+    expect(s.exact / s.punches).toBeGreaterThanOrEqual(0.85);
+    expect(s.falseFires / Math.max(1, s.nonPunches)).toBeLessThanOrEqual(0.1);
+  });
+
+  it.skipIf(!hasPunches)('still reads most punches from a 2-rep calibration', () => {
+    const s = scoreCalibration(segs, 2);
     expect(s.exact / s.punches).toBeGreaterThanOrEqual(0.7);
-    expect(s.falseFires / Math.max(1, s.nonPunches)).toBeLessThanOrEqual(0.25);
+    expect(s.falseFires / Math.max(1, s.nonPunches)).toBeLessThanOrEqual(0.1);
   });
 
   const onsets = (rec: Recording) => {

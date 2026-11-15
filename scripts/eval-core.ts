@@ -1,12 +1,14 @@
-// Shared by scripts/eval-model.ts and tests/classifier.test.ts: labels the motion segments in
-// recorded clips and scores the per-player k-NN as if trained by the guided calibration.
+// Shared by the evaluation scripts and tests/classifier.test.ts: labels the motion segments in
+// recorded clips from the hand-checked reps in eval-gt.ts and scores the per-player k-NN as if
+// trained by the guided calibration.
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import type { PunchType, Stance, Target } from '../shared/types.ts';
 import type { Calibration } from '../client/src/tracking/calibration.ts';
 import { Classifier, passesGate, type Segment } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
-import { KnnModel, kindOf, vector, type Label, type Sample } from '../client/src/tracking/model.ts';
-import { handFor } from '../client/src/tracking/teach.ts';
+import { KnnModel, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
+import { handFor, splitFrom } from '../client/src/tracking/teach.ts';
+import { FIXTURE_REPS } from './eval-gt.ts';
 
 export interface Recording {
   calibration: Calibration | null;
@@ -22,6 +24,7 @@ export interface LabelledSegment {
   clip: string;
   seg: Segment;
   label: Label;
+  target: Target;
 }
 
 export function loadFixtures(dir = 'tests/fixtures'): { file: string; rec: Recording }[] {
@@ -32,25 +35,38 @@ export function loadFixtures(dir = 'tests/fixtures'): { file: string; rec: Recor
     .filter(({ rec }) => rec.calibration && rec.frames.length);
 }
 
-/** Every gated motion in a clip; the strongest `reps` motions of the expected hand get the move's label. */
-export function labelledSegments(file: string, rec: Recording): LabelledSegment[] {
+/** Every motion segment of a recording, replayed through the live classifier with no model. */
+export function segmentsOf(rec: Recording, frames = rec.frames): Segment[] {
   const c = new Classifier(rec.calibration!);
   c.stance = rec.stance ?? 'orthodox';
   const segs: Segment[] = [];
   c.onSegment = (s) => segs.push(s);
   c.model = () => null;
-  for (const f of rec.frames) c.update(f);
-  const out = segs.filter(passesGate).map((seg): LabelledSegment => ({ clip: file, seg, label: 'none' }));
+  for (const f of frames) c.update(f);
+  return segs;
+}
+
+/** The hand-checked reps of a fixture clip, by its file name (empty for defense clips). */
+export function fixtureReps(file: string): number[] {
+  return FIXTURE_REPS[file.replace(/^(orthodox|southpaw)-/, '').replace('.json', '')] ?? [];
+}
+
+/**
+ * Every gated motion in a clip. Each hand-checked rep labels the motion of the punching hand
+ * whose peak is closest to it (within 350 ms); every other motion is a non-punch.
+ */
+export function labelledSegments(file: string, rec: Recording): LabelledSegment[] {
+  const out = segmentsOf(rec).filter(passesGate).map((seg): LabelledSegment => ({ clip: file, seg, label: 'none', target: 'head' }));
   const type = rec.expected?.[0];
-  if (type) {
-    const hand = handFor(type, rec.stance ?? 'orthodox');
-    const ranked = out.filter((s) => s.seg.hand === hand).sort((a, b) => b.seg.maxSpeed * b.seg.travel - a.seg.maxSpeed * a.seg.travel);
-    const picked: LabelledSegment[] = [];
-    for (const s of ranked) {
-      if (picked.length >= (rec.reps ?? rec.expected!.length)) break;
-      if (picked.every((p) => Math.abs(p.seg.peakT - s.seg.peakT) > 450)) picked.push(s);
-    }
-    for (const s of picked) s.label = kindOf(type);
+  if (!type) return out;
+  const hand = handFor(type, rec.stance ?? 'orthodox');
+  const t0 = rec.frames[0].t;
+  for (const t of fixtureReps(file)) {
+    const at = t0 + t * 1000;
+    const best = out
+      .filter((s) => s.seg.hand === hand && s.label === 'none' && Math.abs(s.seg.peakT - at) <= 350)
+      .sort((a, b) => Math.abs(a.seg.peakT - at) - Math.abs(b.seg.peakT - at))[0];
+    if (best) Object.assign(best, { label: kindOf(type), target: rec.expectedTarget ?? 'head' });
   }
   return out;
 }
@@ -65,8 +81,9 @@ export interface Score {
 /**
  * Simulates the guided calibration: the first `shots` reps of each clip (in time order) train the
  * model together with the non-punch motions before them; everything after is the test set.
+ * A test punch is exact when the punch type and the head/body target are both right.
  */
-export function scoreCalibration(all: LabelledSegment[], shots = 3, k = 3): Score {
+export function scoreCalibration(all: LabelledSegment[], shots = 3): Score {
   const train: LabelledSegment[] = [];
   const test: LabelledSegment[] = [];
   for (const clip of new Set(all.map((s) => s.clip))) {
@@ -75,17 +92,17 @@ export function scoreCalibration(all: LabelledSegment[], shots = 3, k = 3): Scor
     const cut = reps.length > shots ? reps[shots - 1].seg.endT : reps.length ? Infinity : segs[Math.floor(segs.length / 2)]?.seg.endT ?? Infinity;
     for (const s of segs) (s.seg.endT <= cut ? train : test).push(s);
   }
-  const sample = (s: LabelledSegment): Sample => ({ hand: s.seg.hand, label: s.label, v: vector(s.seg) });
-  const m = new KnnModel(train.map(sample), k);
+  const m = new KnnModel(train.map((s) => ({ hand: s.seg.hand, label: s.label, v: vector(s.seg) })));
+  const split = splitFrom(train.filter((s) => s.label === 'straight').map((s) => ({ hand: s.seg.hand, y: s.seg.peakY, body: s.target === 'body' })));
   const score: Score = { punches: 0, exact: 0, nonPunches: 0, falseFires: 0 };
   for (const s of test) {
-    const p = m.predict(s.seg.hand, vector(s.seg)).label;
+    const p = m.decide(s.seg, 'orthodox', split);
     if (s.label === 'none') {
       score.nonPunches++;
-      if (p !== 'none') score.falseFires++;
+      if (p) score.falseFires++;
     } else {
       score.punches++;
-      if (p === s.label) score.exact++;
+      if (p && kindOf(p.type) === s.label && p.target === s.target) score.exact++;
     }
   }
   return score;

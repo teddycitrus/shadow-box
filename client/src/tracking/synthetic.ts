@@ -11,8 +11,14 @@ type V = [number, number, number];
 
 const UPPER = 0.28;
 const FORE = 0.27;
-const CAM_DIST = 1.8;
-const FOCAL = 1.3;
+/**
+ * synthFrame's camera: a laptop on a low table, about hip height, 1.2 m away. Like most real
+ * setups it sees straights move a long way on screen (up, as the fist comes toward it).
+ */
+const CAM_DIST = 1.2;
+const FOCAL = 1.1;
+const CAM_Y = 0;
+const CENTRE_Y = 0.75;
 export const SYNTH_ASPECT = 16 / 9;
 
 export interface SynthPunch extends Punch {
@@ -88,14 +94,14 @@ function armPose(hand: Hand, st: SynthState): ArmPose {
   let pole: V;
   if (kind === 'straight') {
     wind = add(rest, [s * 0.02, 0.03, 0.1]);
-    const end = add(shoulder, mul(norm([-0.14 * s, body ? 0.14 : -0.08, -0.53]), 0.545));
+    const end = add(shoulder, mul(norm([-0.14 * s, body ? 0.32 : -0.08, -0.53]), 0.545));
     path = (u) => lerp(wind, end, easeOut(u));
     pole = [s, 1, 0];
   } else if (kind === 'hook') {
     wind = add(rest, [s * 0.12, 0.04, 0.05]);
     const dy = body ? 0.2 : 0;
     const ctrl: V = [s * 0.42, -0.5 + dy, -0.34];
-    const end: V = [-s * 0.06, -0.52 + dy, -0.3];
+    const end: V = [-s * 0.1, -0.52 + dy, -0.3];
     path = (u) => bez(wind, ctrl, end, easeOut(u));
     pole = [s, -0.15, 0.4];
   } else {
@@ -165,7 +171,7 @@ export function synthFrame(st: SynthState): PoseFrame {
     const ox = offset[0] * (headish ? 1 : 0.5);
     const X = p.x + ox, Y = p.y + offset[1], Z = p.z;
     const d = CAM_DIST + Z;
-    return { x: SYNTH_ASPECT / 2 + (FOCAL * X) / d, y: 0.5 + (FOCAL * (Y + 0.4)) / d, z: Z, v: 1 };
+    return { x: SYNTH_ASPECT / 2 + (FOCAL * X) / d, y: CENTRE_Y + (FOCAL * (Y - CAM_Y)) / d, z: Z, v: 1 };
   });
   return { t: st.t, img, world };
 }
