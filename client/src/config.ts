@@ -34,9 +34,22 @@ export const CONFIG = {
     stopFraction: 0.25,
     reverseFraction: 0.8,
     maxDurationMs: 550,
+    /** Fire as soon as the hand stops getting further from rest (peakConfirmFrames frames past the
+     *  furthest point, and back under peakConfirmDrop of that distance) instead of waiting for the
+     *  motion to end. A motion that does not read as a punch then is decided again at its end. */
+    earlyFire: true as boolean,
+    peakConfirmFrames: 1 as number,
+    peakConfirmDrop: 1 as number,
+    /** Past the peak the hand must be heading back toward rest (cosine to the way home) or nearly stopped. */
+    peakReturnCos: 0.5 as number,
     /** Gate: a punch travels at least this far from rest, at least this fast at some point. */
     minTravel: 0.55,
     minPeakSpeed: 4.0,
+    /** Frame-gap correction for the speed gate: none up to gapBoostFromMs, then the measured speed is
+     *  divided by 1 - (gap - from) / span, at most by gapBoostMin. */
+    gapBoostFromMs: 50 as number,
+    gapBoostSpanMs: 350 as number,
+    gapBoostMin: 0.75 as number,
     /** Not a punch when the hand moves mostly up or down (bothHandsVertical times more than sideways) and the
      *  other hand moves the same way by at least bothHandsFraction as much: raising or dropping the guard. */
     bothHandsVertical: 1.5,

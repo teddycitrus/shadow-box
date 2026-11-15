@@ -84,7 +84,8 @@ export class CameraInput implements InputSource {
   }
 
   get stats(): string {
-    return `${this.tracker.delegate ?? 'loading'} ${this.tracker.fps} fps`;
+    const tr = this.tracker;
+    return tr.delegate ? `${tr.delegate} ${tr.model} ${tr.fps} fps ${tr.detectTime.toFixed(0)} ms` : 'loading';
   }
 
   async start(): Promise<void> {

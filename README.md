@@ -50,7 +50,7 @@ The result is a personal profile, saved in the browser (`localStorage` key `shad
 | Duck | Drop your head well down. |
 | Slip left / right | Move your head to the side. |
 
-A punch fires once, at its furthest point. That hand is locked until it comes back toward where it started (or settles somewhere new) and a short cooldown passes (250 ms, 450 ms when gassed).
+A punch fires once, as soon as the hand turns back from its furthest point (one frame after the peak, not at the end of the retraction). That hand is locked until it comes back toward where it started (or settles somewhere new) and a short cooldown passes (250 ms, 450 ms when gassed).
 
 ### Rules
 
@@ -216,11 +216,12 @@ flowchart LR
 
 Punch pipeline, per hand:
 
+0. **Frames:** `PoseTracker` (`client/src/tracking/pose.ts`) runs one detection per new camera frame (`requestVideoFrameCallback`, or `requestAnimationFrame` with a `currentTime` check), GPU first with a CPU fallback. Each frame is stamped with the camera's capture time (falling back to its presentation time), so velocities follow the real frame spacing.
 1. **Track:** each hand is followed on screen in its own frame: origin between the shoulders, x toward the body midline (mirrored for the left hand so both hands share one frame), y up, in sw. While the hand is slower than 1.5 sw/s its rest position follows it.
-2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. The motion ends when the hand comes back to 80% of that distance, stalls for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts) or has settled for 350 ms, so a retraction never becomes a motion of its own.
-3. **Gate:** the motion must travel at least 0.55 sw and reach 4 sw/s. A mostly vertical motion while the other hand moves the same way by at least 60% as much (raising or dropping the guard) is not a punch. This applies whichever classifier is active.
+2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. Once the hand turns back (one frame past the furthest point and heading home, or nearly stopped), the motion so far is read right away and fires if it is a punch. Otherwise it is followed on and read again when it ends: back to 80% of that distance, stalled for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts) or has settled for 350 ms, so a retraction never becomes a motion of its own.
+3. **Gate:** the motion must travel at least 0.55 sw and reach 4 sw/s (speeds measured over frame gaps longer than 50 ms are scaled up, by at most 1/0.75, since they average over more of the punch). A mostly vertical motion while the other hand moves the same way by at least 60% as much (raising or dropping the guard) is not a punch. This applies whichever classifier is active.
 4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the learned height line gives head or body. Without a profile the hand-written rules decide.
-5. **Fire:** the punch is sent with the peak time.
+5. **Fire:** the punch is sent with the peak time, on the frame after the peak in most cases.
 
 Defense, every frame:
 
@@ -228,7 +229,7 @@ Defense, every frame:
 - **Duck and slip** fire when the offset passes 0.55 sw down or 0.5 sw sideways. The teach step personalizes each to half of the deepest duck or slip you showed, if it reached at least 60% of the default, and never below half the default. Slips are ignored during a hand motion and for 300 ms after, since punching moves the head.
 - **Guard** needs both hands out of a motion, slow and up by the face. The height and head-distance limits are the defaults or, if looser, your calibrated guard position plus 0.3 sw, with 0.2 sw of hysteresis once held.
 
-Accuracy is measured against hand-checked rep times (`scripts/eval-gt.ts`) on the 12 recorded clips in `tests/fixtures/` (one orthodox player, 39 reps) and on a real teach session (22 reps), replaying the live classifier frame by frame (`scripts/eval-calibration.ts`). Trained on 4 of 5 reps per move, 87% of fixture punches come out exactly right (type and head/body) with 1 extra fire, and the 4 defense clips fire nothing; trained on the first 3 reps, 73%. On the teach session, where most moves only got two real reps, 59% exact and 77% of types right. The segmenter finds 35 of 39 fixture reps at full frame rate, 35 at half and 31 at a third (`scripts/eval-speed.ts`). Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
+Accuracy is measured against hand-checked rep times (`scripts/eval-gt.ts`) on the 12 recorded clips in `tests/fixtures/` (one orthodox player, 39 reps) and on a real teach session (22 reps), replaying the live classifier frame by frame (`scripts/eval-calibration.ts`). Trained on 4 of 5 reps per move, 87% of fixture punches come out exactly right (type and head/body) with 1 extra fire, and the 4 defense clips fire nothing; trained on the first 3 reps, 73%. On the teach session, where most moves only got two real reps, 59% exact and 77% of types right. Punches fire a median 60 ms (p90 124 ms) after the hand-checked peak on the fixtures and 48 ms (p90 113 ms) on the teach session, recorded at about 25 fps. The segmenter finds 35 of 39 fixture reps at full frame rate, 35 at half and 34 at a third (`scripts/eval-speed.ts`); trained at full rate, 30 of 35 and 28 of 34 of those are read right. Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
 
 ## Getting Started
 
@@ -305,7 +306,8 @@ npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense cha
 | Flag | Effect |
 | --- | --- |
 | `?keys=1` | Keyboard mode, no camera. Keys below. |
-| `?debug=1` | Shows classifier features, defense state and match numbers. |
+| `?debug=1` | Shows classifier features, defense state and match numbers, plus the tracker's delegate, pose model, frame rate and detection time. |
+| `?model=lite` / `?model=full` | Pins the pose model. By default tracking starts on full and drops to lite if it stays under 28 fps for 2 s because detection is the bottleneck (camera frames skipped or detection slower than 28 fps). |
 | `?record=1` | Shows a guided recorder that saves labelled clips of every move into `tests/fixtures/`. See [FIXTURES.md](FIXTURES.md). |
 
 Keyboard mode keys:
@@ -358,7 +360,7 @@ client/
   index.html
   public/
     audio/            optional mp3 overrides
-    models/           pose_landmarker_full.task
+    models/           pose_landmarker_full.task, pose_landmarker_lite.task (downloaded by scripts/copy-assets.mjs if missing)
     mediapipe/wasm/   copied from node_modules by scripts/copy-assets.mjs
   src/
     main.ts           routing: title, practice, create, play, watch

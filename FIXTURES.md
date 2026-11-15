@@ -98,9 +98,9 @@ npx tsx scripts/eval-defense.ts
 npx tsx scripts/dump-segments.ts jab-head
 ```
 
-- `eval-calibration.ts` is the end-to-end score: it replays the live classifier frame by frame with a model trained the way the guided calibration trains it, and scores every fired punch against the hand-checked reps. It reports chronological 2-rep and 3-rep calibrations (with oracle labels and with the teacher's own rep picking), leave one rep out (4 of 5 reps per move), false fires in the defense clips, and leave one rep out on the recorded teach session. `--verbose` lists every confusion, and whether a missed rep was never seen as a motion or rejected as a non-punch. `--no-prune` turns off the outlier rejection of taught reps.
+- `eval-calibration.ts` is the end-to-end score: it replays the live classifier frame by frame with a model trained the way the guided calibration trains it, and scores every fired punch against the hand-checked reps. It reports chronological 2-rep and 3-rep calibrations (with oracle labels and with the teacher's own rep picking), leave one rep out (4 of 5 reps per move), false fires in the defense clips, and leave one rep out on the recorded teach session, each with the median and p90 delay from the hand-checked peak to the frame the punch fired. `--verbose` lists every confusion, and whether a missed rep was never seen as a motion or rejected as a non-punch. `--no-prune` turns off the outlier rejection of taught reps.
 - `eval-model.ts` classifies every gated motion leave-one-out (fast, for tuning features and model settings).
-- `eval-speed.ts` drops frames (every 2nd, every 3rd) and reports how many reps are still found and read right.
+- `eval-speed.ts` drops frames (every 2nd, every 3rd) and reports how many reps are still found and read right, both trained at that rate and trained at full rate (taught at a normal pace, thrown fast).
 - `eval-session.ts` trains on a saved teach session and replays the play part of a saved play session, listing what fired.
 - `eval-defense.ts` prints guard, duck, left slip and right slip onsets per clip, and the share of frames in guard.
 - `dump-segments.ts <filter> [minTravel]` prints the features of every motion segment in clips whose name contains `<filter>`, for segments travelling at least `minTravel` shoulder widths (default 0.45).

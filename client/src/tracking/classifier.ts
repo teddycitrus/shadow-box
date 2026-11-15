@@ -94,6 +94,8 @@ export interface Segment {
 
 interface Sample {
   t: number;
+  /** Time since the previous frame (ms), 0 for the first. */
+  gap: number;
   p: PathPoint;
   f: HandFeatures;
   img: Lm;
@@ -107,9 +109,13 @@ interface Active {
   maxD: number;
   peakIdx: number;
   maxSpeed: number;
+  /** Top speed corrected for the frame gap (see gapBoost). */
+  gateSpeed: number;
   maxUp: number;
   maxElbow: number;
   stall: number;
+  /** Time of the last peak already read early (each candidate peak is read once). */
+  checkedPeakT: number;
 }
 
 interface HandState {
@@ -135,6 +141,11 @@ export interface ClassifierOutput {
   features: Features | null;
   /** Explanation of the last punch decision, for ?debug=1. */
   last: string | null;
+}
+
+interface Decision {
+  punch: Punch | null;
+  why: string;
 }
 
 const sideSign = (h: Hand) => (h === 'left' ? 1 : -1);
@@ -219,7 +230,7 @@ export class Classifier {
       };
       feats[hand] = hf;
       const pe = loc(e);
-      samples[hand] = { t: f.t, p: { t: f.t, x: pw.x, y: pw.y, ex: pe.x, ey: pe.y, s: hf.scale }, f: hf, img: { ...w }, z: wz, nose: loc(nose) };
+      samples[hand] = { t: f.t, gap: prev ? f.t - prev.t : 0, p: { t: f.t, x: pw.x, y: pw.y, ex: pe.x, ey: pe.y, s: hf.scale }, f: hf, img: { ...w }, z: wz, nose: loc(nose) };
     }
     for (const hand of ['left', 'right'] as Hand[]) {
       const p = this.stepHand(hand, samples[hand], chinY);
@@ -284,7 +295,8 @@ export class Classifier {
     const speed = smp.f.speed;
     // Any fast hand movement (punch, retraction, wind-up) moves the head too; slips wait for it.
     if (speed >= c.startSpeed) st.lastMotion = t;
-    if (speed < c.restSpeed) st.stillSince = Math.min(st.stillSince, t);
+    // The hand stopped somewhere between the previous frame and this one; take the midpoint so slow cameras settle on time.
+    if (speed < c.restSpeed) st.stillSince = Math.min(st.stillSince, t - smp.gap / 2);
     else st.stillSince = Infinity;
     if (!st.anchor) st.anchor = { x: smp.p.x, y: smp.p.y };
     const dist = Math.hypot(smp.p.x - st.anchor.x, smp.p.y - st.anchor.y);
@@ -320,7 +332,7 @@ export class Classifier {
       let i = st.buf.length - 1;
       while (i > 0 && Math.hypot(st.buf[i - 1].p.x - st.anchor.x, st.buf[i - 1].p.y - st.anchor.y) < Math.hypot(st.buf[i].p.x - st.anchor.x, st.buf[i].p.y - st.anchor.y) && t - st.buf[i - 1].t < c.maxDurationMs) i--;
       st.mode = 'active';
-      st.active = { startIdx: i, anchor: { ...st.anchor }, maxD: 0, peakIdx: i, maxSpeed: 0, maxUp: 0, maxElbow: 0, stall: 0 };
+      st.active = { startIdx: i, anchor: { ...st.anchor }, maxD: 0, peakIdx: i, maxSpeed: 0, gateSpeed: 0, maxUp: 0, maxElbow: 0, stall: 0, checkedPeakT: -Infinity };
       for (let j = i; j < st.buf.length - 1; j++) this.track(st.active, st.buf[j], j);
     }
     const a = st.active!;
@@ -337,8 +349,33 @@ export class Classifier {
       st.active = null;
       return null;
     }
-    if (!reversed && !stopped && !tooLong) return null;
+    if (!reversed && !stopped && !tooLong) {
+      // Early read: once the hand has stopped getting further from rest, decide from the motion so far
+      // and fire right away when it is a punch; otherwise keep following it and decide at the end.
+      const pk = st.buf[a.peakIdx];
+      const since = st.buf.length - 1 - a.peakIdx;
+      if (c.earlyFire && since >= c.peakConfirmFrames && pk.t !== a.checkedPeakT && a.maxD >= c.minTravel && d <= a.maxD * c.peakConfirmDrop && this.pastPeak(a, pk.p, smp)) {
+        a.checkedPeakT = pk.t;
+        const seg = this.segment(hand, st, a, chinY, t);
+        const r = this.decide(seg);
+        if (r.punch) return this.finish(hand, st, a, chinY, t, seg, r);
+      }
+      return null;
+    }
     return this.finish(hand, st, a, chinY, t);
+  }
+
+  /**
+   * The hand has really turned at its furthest point: it is heading back toward rest, or has nearly
+   * stopped. A hand that only slows or swerves on the way out (a hook bending round) does not count.
+   */
+  private pastPeak(a: Active, pk: P2, s: Sample): boolean {
+    const c = CONFIG.punch;
+    if (s.f.speed < a.maxSpeed * c.stopFraction) return true;
+    const mx = s.p.x - pk.x, my = s.p.y - pk.y;
+    const bx = a.anchor.x - pk.x, by = a.anchor.y - pk.y;
+    const m = Math.hypot(mx, my), b = Math.hypot(bx, by);
+    return m > 0 && b > 0 && (mx * bx + my * by) / (m * b) >= c.peakReturnCos;
   }
 
   private track(a: Active, s: Sample, idx: number): void {
@@ -348,12 +385,13 @@ export class Classifier {
       a.peakIdx = idx;
     }
     a.maxSpeed = Math.max(a.maxSpeed, s.f.speed);
+    a.gateSpeed = Math.max(a.gateSpeed, s.f.speed * gapBoost(s.gap));
     a.maxUp = Math.max(a.maxUp, s.f.vUp);
     a.maxElbow = Math.max(a.maxElbow, s.f.elbow);
   }
 
   /** Builds the segment, decides it, and moves the hand on to waiting for its return. */
-  private finish(hand: Hand, st: HandState, a: Active, chinY: number, t: number): (Punch & { at: number }) | null {
+  private finish(hand: Hand, st: HandState, a: Active, chinY: number, t: number, early?: Segment, read?: Decision): (Punch & { at: number }) | null {
     st.active = null;
     st.mode = 'returning';
     st.lastMax = a.maxD;
@@ -361,8 +399,11 @@ export class Classifier {
     const n = Math.hypot(pk.x - a.anchor.x, pk.y - a.anchor.y) || 1;
     st.lastDir = { x: (pk.x - a.anchor.x) / n, y: (pk.y - a.anchor.y) / n };
     st.stillSince = Infinity;
-    const seg = this.segment(hand, st, a, chinY, t);
-    const punch = this.classify(seg);
+    const seg = early ?? this.segment(hand, st, a, chinY, t);
+    this.onSegment?.(seg);
+    const r = read ?? this.decide(seg);
+    this.lastDecision = r.why;
+    const punch = r.punch;
     this.onDecision?.(seg, punch, `${this.lastDecision ?? ''}${punch && !this.canPunch ? ' (blocked: cannot punch now)' : ''}`);
     st.fired = !!punch && this.canPunch;
     if (!st.fired) return null;
@@ -390,7 +431,7 @@ export class Classifier {
       forward: w.z * fwd + w.scale * Math.max(0, pk.f.scale - s0.f.scale) + w.travel * a.maxD,
       elbow: maxElbow, startElbow: s0.f.elbow, startY: s0.f.y, peakY: pk.f.y, chinY,
       startHead: s0.f.headDist, peakHead: pk.f.headDist, scaleGain: pk.f.scale - s0.f.scale,
-      travel: a.maxD, maxSpeed: a.maxSpeed, maxUp: a.maxUp, reach: pk.f.reach, startReach: s0.f.reach,
+      travel: a.maxD, maxSpeed: a.gateSpeed, maxUp: a.maxUp, reach: pk.f.reach, startReach: s0.f.reach,
       fromGuard: this.nearGuard(s0.f),
       start, peak: pk.p, nose: pk.nose, path, other, otherRise,
       headDrop: s0.nose.y - pk.nose.y,
@@ -405,24 +446,19 @@ export class Classifier {
     return f.headDist <= head && f.y <= y;
   }
 
-  private classify(seg: Segment): Punch | null {
+  /** Decides one motion (no side effects), with an explanation for ?debug=1. */
+  private decide(seg: Segment): Decision {
     const fmt = (n: number) => n.toFixed(2);
-    const info = `${seg.hand} in=${fmt(seg.dIn)} rise=${fmt(seg.rise)} y=${fmt(seg.peakY)} travel=${fmt(seg.travel)} elbow=${seg.elbow.toFixed(0)} other=${fmt(seg.other)}`;
-    this.onSegment?.(seg);
+    const info = `${seg.hand} in=${fmt(seg.dIn)} rise=${fmt(seg.rise)} y=${fmt(seg.peakY)} travel=${fmt(seg.travel)} elbow=${seg.elbow.toFixed(0)} other=${fmt(seg.other)} +${(seg.endT - seg.peakT).toFixed(0)}ms`;
     if (!passesGate(seg)) {
-      this.lastDecision = `none (${seg.travel < CONFIG.punch.minTravel ? 'short' : bothHands(seg) ? 'both hands' : 'slow'}) ${info}`;
-      return null;
+      return { punch: null, why: `none (${seg.travel < CONFIG.punch.minTravel ? 'short' : bothHands(seg) ? 'both hands' : 'slow'}) ${info}` };
     }
     if (this.model) {
       const m = this.model(seg);
-      if (m !== undefined) {
-        this.lastDecision = `${m ? `${m.type} ${m.target}` : 'none'} (model) ${info}`;
-        return m;
-      }
+      if (m !== undefined) return { punch: m, why: `${m ? `${m.type} ${m.target}` : 'none'} (model) ${info}` };
     }
     const r = ruleDecision(seg, this.stance);
-    this.lastDecision = `${r ? `${r.type} ${r.target}` : 'none'} ${info}`;
-    return r;
+    return { punch: r, why: `${r ? `${r.type} ${r.target}` : 'none'} ${info}` };
   }
 }
 
@@ -455,6 +491,15 @@ export function ruleDecision(seg: Segment, stance: Stance): Punch | null {
     type = hand === lead ? 'jab' : 'cross';
   }
   return type ? { type, hand, target } : null;
+}
+
+/**
+ * Speed is measured between frames, so with long frame gaps it averages over more of the punch and
+ * reads low. Scales it back up for gaps past the rate the gate was tuned at (about 25 fps).
+ */
+export function gapBoost(gapMs: number): number {
+  const c = CONFIG.punch;
+  return 1 / Math.max(c.gapBoostMin, 1 - Math.max(0, gapMs - c.gapBoostFromMs) / c.gapBoostSpanMs);
 }
 
 function newHand(): HandState {

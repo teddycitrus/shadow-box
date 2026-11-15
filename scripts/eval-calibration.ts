@@ -16,7 +16,7 @@ const verbose = process.argv.includes('--verbose');
 const MATCH_MS = 350;
 
 interface Clip { name: string; rec: Recording; reps: { hand: Hand; type: PunchType; target: Target; t: number }[] }
-interface Fire extends Punch { at: number }
+interface Fire extends Punch { at: number; /** Frame time the punch was emitted. */ fireT: number }
 type Decide = (s: Segment) => Punch | null;
 interface Taught { seg: Segment; type: PunchType | null; target: Target }
 
@@ -46,7 +46,7 @@ function replay(rec: Recording, decide: Decide, frames: PoseFrame[] = rec.frames
   c.onDecision = (seg, p) => {
     if (!p && passesGate(seg)) out.rejected!.push(seg);
   };
-  for (const f of frames) out.push(...c.update(f).punches);
+  for (const f of frames) out.push(...c.update(f).punches.map((p) => ({ ...p, fireT: f.t })));
   return out;
 }
 
@@ -64,8 +64,8 @@ function label(segs: Segment[], reps: Clip['reps'], t0: number): Taught[] {
   return out;
 }
 
-interface Score { reps: number; exact: number; type: number; target: number; missed: number; extra: number; confusion: Map<string, number> }
-const newScore = (): Score => ({ reps: 0, exact: 0, type: 0, target: 0, missed: 0, extra: 0, confusion: new Map() });
+interface Score { reps: number; exact: number; type: number; target: number; missed: number; extra: number; confusion: Map<string, number>; delay: number[] }
+const newScore = (): Score => ({ reps: 0, exact: 0, type: 0, target: 0, missed: 0, extra: 0, confusion: new Map(), delay: [] });
 
 function score(sc: Score, fires: Fire[] & { rejected?: Segment[] }, reps: Clip['reps'], t0: number, from: number, to: number): void {
   const inWin = fires.filter((f) => f.at >= from && f.at < to);
@@ -82,6 +82,7 @@ function score(sc: Score, fires: Fire[] & { rejected?: Segment[] }, reps: Clip['
       continue;
     }
     used.add(m);
+    sc.delay.push(m.fireT - rt);
     if (m.type === r.type) sc.type++;
     if (m.target === r.target) sc.target++;
     if (m.type === r.type && m.target === r.target) sc.exact++;
@@ -91,8 +92,11 @@ function score(sc: Score, fires: Fire[] & { rejected?: Segment[] }, reps: Clip['
 }
 
 const pct = (a: number, b: number) => `${b ? Math.round((100 * a) / b) : 0}%`;
+const q = (xs: number[], k: number) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(k * xs.length))] : NaN);
+/** Delay from the hand-checked peak to the frame the punch fired: median and p90, in ms. */
+const delay = (sc: Score) => (sc.delay.length ? `  delay med ${q(sc.delay, 0.5).toFixed(0)} p90 ${q(sc.delay, 0.9).toFixed(0)} ms` : '');
 function print(name: string, sc: Score, negMin?: number): void {
-  console.log(`${name.padEnd(44)} exact ${sc.exact}/${sc.reps} (${pct(sc.exact, sc.reps)})  type ${pct(sc.type, sc.reps)}  target ${pct(sc.target, sc.reps)}  missed ${sc.missed}  extra fires ${sc.extra}${negMin ? ` (${(sc.extra / negMin).toFixed(1)}/min)` : ''}`);
+  console.log(`${name.padEnd(44)} exact ${sc.exact}/${sc.reps} (${pct(sc.exact, sc.reps)})  type ${pct(sc.type, sc.reps)}  target ${pct(sc.target, sc.reps)}  missed ${sc.missed}  extra fires ${sc.extra}${negMin ? ` (${(sc.extra / negMin).toFixed(1)}/min)` : ''}${delay(sc)}`);
   if (verbose) for (const [k, v] of [...sc.confusion].sort((a, b) => b[1] - a[1])) console.log(`      ${k}: ${v}`);
 }
 
