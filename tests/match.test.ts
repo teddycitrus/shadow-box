@@ -112,11 +112,11 @@ describe('stamina', () => {
     m.fighters[1].stamina = 50;
     m.setDefense(1, { ...NO_DEFENSE, guard: true }, t, t);
     hit(m, t);
-    // 4 base + 0.8 per point of the 16.5 raw damage, plus 0.2 s of guard drain at 5/s.
-    expect(m.fighters[1].stamina).toBeCloseTo(50 - 4 - 16.5 * 0.8 - 5 * 0.2, 1);
+    // 4 base + 0.8 per point of the 16.5 raw damage, less 0.2 s of in-guard recovery at 10/s.
+    expect(m.fighters[1].stamina).toBeCloseTo(50 - 4 - 16.5 * 0.8 + 10 * 0.2, 1);
   });
 
-  it('recovers 15/s after 0.6 s idle, and holding guard drains 5/s', () => {
+  it('recovers 15/s after 0.6 s idle, and 10/s while holding guard', () => {
     const { m, t } = started();
     m.punch(0, upper, t, t);
     m.tick(t + 600);
@@ -126,7 +126,7 @@ describe('stamina', () => {
     m.fighters[0].stamina = 50;
     m.setDefense(0, { ...NO_DEFENSE, guard: true }, t + 1600, t + 1600);
     m.tick(t + 2600);
-    expect(m.fighters[0].stamina).toBeCloseTo(45, 1);
+    expect(m.fighters[0].stamina).toBeCloseTo(60, 1);
   });
 
   it('gassed punches do 0.6x damage', () => {
@@ -146,6 +146,20 @@ describe('stamina', () => {
     expect(m.fighters[0].exhausted).toBe(true);
     m.tick(t + 600 + 1400);
     expect(m.fighters[0].exhausted).toBe(false);
+  });
+
+  it('an exhausted fighter holding guard recovers and can punch again', () => {
+    // Camera players rest at guard between punches; guard used to drain stamina, so an exhausted
+    // player doing what the HUD asks (breathe, hold your guard) was locked out for good.
+    const { m, t } = started();
+    m.fighters[0].stamina = 10;
+    m.setDefense(0, { ...NO_DEFENSE, guard: true }, t, t);
+    m.punch(0, upper, t, t);
+    expect(m.fighters[0].exhausted).toBe(true);
+    let now = t;
+    while (now < t + 6_000 && m.fighters[0].exhausted) m.tick((now += 100));
+    expect(m.fighters[0].exhausted).toBe(false);
+    expect(m.punch(0, jab, now, now)).toBe(true);
   });
 });
 

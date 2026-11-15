@@ -114,6 +114,10 @@ export const CONFIG = {
     minStd: 0.1,
     /** A hook or uppercut within this factor of the nearest straight's distance is read as the straight. */
     straightMargin: 1.0,
+    /** Neighbours voting on head or body among the player's own reps of that punch. */
+    targetK: 3,
+    /** Verify: a punch read as no punch drops at most this many of the non-punch examples nearest to it. */
+    maxShadowDrop: 2,
     repsPerMove: 5,
     /** Motions of one hand closer together than this are one attempt (wind-up, punch, overshoot). */
     attemptGapMs: 250,

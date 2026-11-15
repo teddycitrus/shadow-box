@@ -1,12 +1,17 @@
-// Cloudflare Worker: static assets for the client plus one Durable Object per room.
+// Cloudflare Worker: static assets for the client, one Durable Object per room, and a single
+// DataDO holding the shared calibration data.
 import { DurableObject } from 'cloudflare:workers';
 import type { ServerMsg } from '../shared/types.ts';
+import { CalibrationStore, type DataKV } from '../server/data-store.ts';
 import { Room, newCode, type Conn } from '../server/room.ts';
 import { MAX_MESSAGE_BYTES, Session } from '../server/session.ts';
 
 interface Env {
   ASSETS: Fetcher;
   ROOMS: DurableObjectNamespace<RoomDO>;
+  DATA: DurableObjectNamespace<DataDO>;
+  /** Set with `wrangler secret put ADMIN_KEY` to enable /api/export. */
+  ADMIN_KEY?: string;
 }
 
 const CODE_RE = /^[A-Z]{4}$/;
@@ -17,6 +22,7 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === '/audio-manifest') return env.ASSETS.fetch(new URL('/audio-manifest.json', url));
+    if (url.pathname.startsWith('/api/')) return env.DATA.get(env.DATA.idFromName('global')).fetch(req);
     if (url.pathname !== '/ws') return env.ASSETS.fetch(req);
     if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('expected a WebSocket upgrade', { status: 426 });
 
@@ -102,5 +108,36 @@ export class RoomDO extends DurableObject<Env> {
   private stopTicking(): void {
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
+  }
+}
+
+/** The one global calibration data store (idFromName('global')). */
+export class DataDO extends DurableObject<Env> {
+  private store: CalibrationStore;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    const st = ctx.storage;
+    const kv: DataKV = {
+      get: (k) => st.get(k),
+      put: (e) => st.put(e),
+      list: async <T>(prefix: string, startAfter: string | undefined, limit: number) =>
+        [...(await st.list<T>({ prefix, startAfter, limit })).entries()],
+    };
+    this.store = new CalibrationStore(kv);
+  }
+
+  async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const r = await this.store.handle({
+      method: req.method,
+      path: url.pathname,
+      search: url.searchParams,
+      ip: req.headers.get('CF-Connecting-IP') ?? 'unknown',
+      auth: req.headers.get('Authorization'),
+      adminKey: this.env.ADMIN_KEY || undefined,
+      body: () => req.text(),
+    });
+    return Response.json(r.body, { status: r.status, headers: r.headers });
   }
 }

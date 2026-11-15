@@ -37,7 +37,7 @@ export default defineConfig({
   build: { outDir: '../dist/client', emptyOutDir: true, chunkSizeWarningLimit: 2000 },
   server: {
     port: 5173,
-    proxy: { '/ws': { target: 'ws://localhost:3000', ws: true } },
+    proxy: { '/ws': { target: 'ws://localhost:3000', ws: true }, '/api': 'http://localhost:3000' },
   },
   test: {
     root: '.',

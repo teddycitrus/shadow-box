@@ -7,7 +7,7 @@ import type { Hand, Punch, PunchType, Target } from '../shared/types.ts';
 import { CONFIG } from '../client/src/config.ts';
 import { Classifier, passesGate, type Segment } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
-import { KnnModel, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
+import { KnnModel, kindOf, setTargetFeatures, vector, type Label } from '../client/src/tracking/model.ts';
 import { handFor, pickReps, pruneOutliers, splitFrom, teachSteps } from '../client/src/tracking/teach.ts';
 import { loadFixtures, segmentsOf, type Recording } from './eval-core.ts';
 import { FIXTURE_REPS, TEACH_REPS, TEACH_SESSION } from './eval-gt.ts';
@@ -22,10 +22,14 @@ interface Taught { seg: Segment; type: PunchType | null; target: Target }
 
 // ---- pipeline adapter: the only part that knows the model API ----
 const prune = !process.argv.includes('--no-prune');
+const lineOnly = process.argv.includes('--line');
+const tf = process.argv.find((a) => a.startsWith('--tf='));
+if (tf) setTargetFeatures(tf.slice(5).split(',').map(Number));
 function train(taught: Taught[]): Decide {
   const gated = taught.filter((x) => passesGate(x.seg)).map((x) => ({ ...x, label: x.type ? kindOf(x.type) : ('none' as Label) }));
   const kept = prune ? pruneOutliers(gated) : gated;
-  const samples = kept.map((x) => ({ hand: x.seg.hand, label: x.label, v: vector(x.seg) }));
+  // --line: head/body by the height line only (no taught targets), as before TargetModel.
+  const samples = kept.map((x) => ({ hand: x.seg.hand, label: x.label, v: vector(x.seg), ...(x.type && !lineOnly ? { target: x.target } : {}) }));
   if (!samples.some((s) => s.label !== 'none')) return () => null;
   const m = new KnnModel(samples);
   const split = splitFrom(kept.filter((x) => x.label === 'straight').map((x) => ({ hand: x.seg.hand, y: x.seg.peakY, body: x.target === 'body' })));

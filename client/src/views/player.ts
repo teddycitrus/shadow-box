@@ -8,6 +8,7 @@ import { ProceduralAvatar, type Avatar } from '../scene/avatar.ts';
 import { FirstPersonGloves, Sparks } from '../scene/fp.ts';
 import { Stage } from '../scene/stage.ts';
 import { KEY_HELP, type InputSource } from '../tracking/input.ts';
+import { hasPendingUpload, onShareChange, setShareConsent, shareConsent } from '../tracking/share.ts';
 import type { TeachStatus } from '../tracking/teach.ts';
 import { commonEvent } from '../ui/announce.ts';
 import { button, flag, go, h } from '../ui/dom.ts';
@@ -104,6 +105,13 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       copyRow('Send to viewers', `/watch/${opts.code}`),
     );
   }
+  const shareBox = h('input', { type: 'checkbox' });
+  shareBox.addEventListener('change', () => setShareConsent(shareBox.checked));
+  const shareData = h('label', { class: 'share-data' }, shareBox,
+    h('span', {}, h('b', {}, 'Share my calibration data to improve tracking'), h('small', {}, 'Only motion measurements are sent, never video.')));
+  const syncShare = () => (shareBox.checked = shareConsent() === true);
+  syncShare();
+  onShareChange(syncShare);
   const lobby = h('div', { class: 'panel lobby' },
     h('h2', {}, opts.practice ? 'Practice' : 'Fight lobby'),
     share,
@@ -111,6 +119,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
     players,
     h('div', { class: 'row' }, stanceBtn, input.kind === 'camera' ? recal : null),
     input.kind === 'camera' ? h('div', { class: 'row' }, reteach, skipTeach) : null,
+    input.kind === 'camera' ? shareData : null,
     h('div', { class: 'row ready-row' }, readyBtn),
     h('p', { class: 'hint' }, input.kind === 'keys'
       ? 'Keyboard mode. Press Ready to start.'
@@ -162,12 +171,17 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       lastDef = t.defense;
       link.defense(t.defense, now);
     }
-    for (const p of t.punches) link.punch({ type: p.type, hand: p.hand, target: p.target }, p.at);
+    for (const p of t.punches) {
+      link.punch({ type: p.type, hand: p.hand, target: p.target }, p.at);
+      if (debug) sentPunch = { name: `${p.type} ${p.target}`, at: now, age: now - p.at, accepted: null, land: null };
+    }
     rec?.push(t);
   };
 
   // Link to view.
   let snap: MatchSnapshot | null = null;
+  /** ?debug=1: the last punch sent to the match, whether it was taken, and how it landed. */
+  let sentPunch: SentPunch | null = null;
   let hitStopUntil = 0;
   let pendingPose: WirePose | null = null;
   let shake = 0;
@@ -222,6 +236,19 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       h('div', { class: 'teach-scores' }, ...input.scores.map((m) =>
         h('div', { class: m.ok >= CONFIG.model.verifyPasses ? 'ok' : 'bad' }, h('span', {}, m.prompt), h('b', {}, `${m.ok}/${m.tries}`)))),
     );
+    if (shareConsent() === null && hasPendingUpload()) {
+      // Asked once, after the first finished calibration; the lobby checkbox changes it later.
+      resultsUntil = performance.now() + RESULTS_MS * 2;
+      const answer = (on: boolean) => {
+        setShareConsent(on);
+        ask.replaceChildren(on ? 'Thanks. Calibration shared.' : 'Not shared.');
+        resultsUntil = performance.now() + 1_500;
+      };
+      const ask = h('div', { class: 'share-ask' },
+        h('div', {}, 'Share this calibration to improve tracking for everyone? Only motion measurements are sent, never video.'),
+        h('div', { class: 'row' }, button('Share', () => answer(true), 'primary'), button('No thanks', () => answer(false), 'ghost')));
+      teachBox.append(ask);
+    }
   }
 
   link.handlers = {
@@ -273,11 +300,13 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
     const oppSlot = other(mySlot);
     switch (ev.e) {
       case 'throw':
+        if (sentPunch && ev.slot === mySlot && sentPunch.accepted === null) sentPunch.accepted = true;
         hud.callout(ev.slot, ev.punch);
         if (ev.slot === mySlot) gloves.punch(ev.punch);
         else opp.playReaction({ kind: 'throw', punch: ev.punch });
         break;
       case 'land':
+        if (sentPunch?.accepted && ev.attacker === mySlot && !sentPunch.land) sentPunch.land = `${ev.outcome}${ev.damage ? ` ${ev.damage}` : ''}`;
         if (ev.attacker === mySlot) {
           if (ev.outcome === 'hit' || ev.outcome === 'block') {
             opp.playReaction({ kind: ev.outcome, zone: ev.zone, heavy: ev.damage >= 9 });
@@ -386,7 +415,12 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       sendReady();
     }
     readyBtn.toggleAttribute('disabled', !input.calibrated);
-    if (debug) debug.textContent = debugText(input, snap);
+    if (debug) {
+      // No throw event within a moment of sending means the match turned the punch down.
+      if (sentPunch && sentPunch.accepted === null && performance.now() - sentPunch.at > 600) sentPunch.accepted = false;
+      debug.textContent = `${debugText(input, snap)}
+${sentText(sentPunch, snap?.fighters[mySlot] ?? null)}`;
+    }
   });
 
   function setSlot(s: Slot | null): void {
@@ -398,6 +432,23 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
   }
   setSlot(mySlot);
   return { setSlot };
+}
+
+interface SentPunch {
+  name: string;
+  at: number;
+  /** How old the punch's peak time was when it was sent, in ms. */
+  age: number;
+  accepted: boolean | null;
+  land: string | null;
+}
+
+function sentText(p: SentPunch | null, me: MatchSnapshot['fighters'][number] | null): string {
+  if (!p) return 'sent: -';
+  const ago = ((performance.now() - p.at) / 1000).toFixed(1);
+  const why = me?.exhausted ? 'exhausted' : me && me.status !== 'up' ? me.status : 'not in a round?';
+  const match = p.accepted === null ? 'waiting' : p.accepted ? `taken, ${p.land ?? 'resolving'}` : `REJECTED (${why})`;
+  return `sent: ${p.name} ${ago}s ago, peak ${p.age.toFixed(0)} ms old  match: ${match}`;
 }
 
 function debugText(input: InputSource, snap: MatchSnapshot | null): string {

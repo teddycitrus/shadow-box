@@ -9,3 +9,4 @@ recordings/
 *.log
 tests/fixtures/sessions/
 .wrangler/
+data/

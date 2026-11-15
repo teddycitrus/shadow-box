@@ -123,7 +123,7 @@ export class Teacher {
   private extreme = { duck: 0, slipLeft: 0, slipRight: 0 };
   private verifyState: Verify | null = null;
   private scores = new Map<string, MoveScore>();
-  private cached: { model: KnnModel | null; split: BodySplit } | null = null;
+  private cached: { model: KnnModel | null; split: BodySplit; kept: Taught[] } | null = null;
   private finished = false;
 
   constructor(private stance: Stance) {}
@@ -217,13 +217,14 @@ export class Teacher {
     this.cached = null;
   }
 
-  private trained(): { model: KnnModel | null; split: BodySplit } {
+  private trained(): { model: KnnModel | null; split: BodySplit; kept: Taught[] } {
     if (!this.cached) {
       const kept = pruneOutliers(this.taught);
-      const samples = kept.map((x): Sample => ({ hand: x.seg.hand, label: x.label, v: vector(x.seg) }));
+      const samples = kept.map(toSample);
       this.cached = {
         model: samples.some((x) => x.label !== 'none') ? new KnnModel(samples) : null,
         split: splitFrom(kept.filter((x) => x.label === 'straight').map((x) => ({ hand: x.seg.hand, y: x.seg.peakY, body: x.step?.target === 'body' }))),
+        kept,
       };
     }
     return this.cached;
@@ -287,6 +288,13 @@ export class Teacher {
     const m = v.current!;
     const ok = !!a.fired && a.fired.type === m.type && a.fired.target === m.target;
     const best = a.firedSeg ?? attemptRep(a.segs);
+    if (!a.fired) {
+      // Read as no punch: the non-punch examples nearer to it than any rep of this punch were
+      // taught wrong for this player (a body jab looks like an uppercut wind-up or a duck), so they go.
+      const { model, kept } = this.trained();
+      const drop = new Set(model?.shadowing(best.hand, vector(best), kindOf(m.type!)).map((i) => kept[i]));
+      this.taught = this.taught.filter((x) => !drop.has(x));
+    }
     // Every attempt becomes a taught rep with the label that was asked for: a wrong read is
     // corrected on the spot, a right one adds another example.
     this.add(best, kindOf(m.type!), m);
@@ -339,7 +347,7 @@ export class Teacher {
     const kept = pruneOutliers(this.taught);
     return {
       version: 4,
-      samples: kept.map((x) => ({ hand: x.seg.hand, label: x.label, v: vector(x.seg) })),
+      samples: kept.map(toSample),
       defense: {
         duck: pick(this.extreme.duck, d.duckDrop),
         slipLeft: pick(this.extreme.slipLeft, d.slipShift),
@@ -350,6 +358,12 @@ export class Teacher {
       scores: [...this.scores.values()],
     };
   }
+}
+
+/** A taught motion as a model sample; punch reps keep the target they were taught as. */
+function toSample(x: Taught): Sample {
+  const target = x.label !== 'none' ? x.step?.target : undefined;
+  return { hand: x.seg.hand, label: x.label, v: vector(x.seg), ...(target ? { target } : {}) };
 }
 
 function punchName(p: Punch): string {
@@ -442,6 +456,7 @@ export function pruneOutliers<T extends { seg: Segment; label: Label }>(taught: 
   return taught.filter((x) => !drop.has(x));
 }
 
-export function modelFrom(profile: Profile): KnnModel | null {
-  return profile.samples.some((s) => s.label !== 'none') ? new KnnModel(profile.samples) : null;
+/** `prior`: optional population samples that fill gaps in the player's own (see share.ts). */
+export function modelFrom(profile: Profile, prior?: Sample[]): KnnModel | null {
+  return profile.samples.some((s) => s.label !== 'none') ? new KnnModel(profile.samples, undefined, undefined, prior) : null;
 }

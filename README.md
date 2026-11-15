@@ -30,7 +30,7 @@ A browser boxing game you play with your body. A webcam and MediaPipe pose track
    - **Rest**, 6 s each: guard up and moving without punching, then dropping your hands and bringing them back. These motions are learned as non-punches.
    - **8 punches** in turn: jab, cross, left hook, right hook, left uppercut, right uppercut, jab to the body, cross to the body. Throw each one 5 times, back to guard after each (a step moves on after 5 reps or 15 s). Wind-ups and fidgets around each rep are learned as non-punches, and a rep far from the rest of its move is dropped.
    - **Duck, slip left, slip right**, 3.5 s each.
-   - **Check**: random punches from the list are prompted and read back live with your new model. A wrong or missed read is taught on the spot with the right label, and the move comes back until it is read right twice (at most 4 tries). The overlay ends with how often each move was read right; the lobby lists any move that stayed unreliable.
+   - **Check**: random punches from the list are prompted and read back live with your new model. A wrong or missed read is taught on the spot with the right label (a punch read as no punch also drops the two non-punch examples nearest to it that outvoted it, such as an uppercut wind-up that looks like a body jab), and the move comes back until it is read right twice (at most 4 tries). The overlay ends with how often each move was read right; the lobby lists any move that stayed unreliable.
 
    Punches do not reach the match during this step.
 4. Press Ready.
@@ -45,7 +45,7 @@ The result is a personal profile, saved in the browser (`localStorage` key `shad
 | Cross | Punch straight at the camera with your rear hand. |
 | Left / right hook | Elbow bent, hand around shoulder height, swing across. |
 | Left / right uppercut | Start below your chin and drive the fist up. |
-| Head or body | Decided by wrist height at the peak of a straight. With a taught profile the line sits midway between your own head and body reps, per hand (hooks and uppercuts are taught to the head). With the default rules it is a fixed line just above your shoulders. |
+| Head or body | With a taught profile, by the nearest of your own head and body reps of that punch, compared by where the fist ends up relative to your nose (both hands' reps, the other hand's counted slightly further away). That holds up with a high camera, where a head jab can end below your shoulders on screen. Hooks and uppercuts are taught to the head only, so they read as head. Older profiles without taught targets, and the default rules, use wrist height at the peak against a line: midway between your head and body reps, or a fixed line just above your shoulders. |
 | High guard | Both gloves up by your face. |
 | Duck | Drop your head well down. |
 | Slip left / right | Move your head to the side. |
@@ -58,11 +58,11 @@ All numbers come from `shared/rules.ts`.
 
 - **Format:** 3 rounds of 60 s, 8 s breaks, 3 s countdown. Each fighter has 100 HP. The round clock stops while someone is down.
 - **Damage:** jab 4, cross 7, hook 9, uppercut 11. Head shots deal x1.5.
-- **Guard** blocks any punch but still takes 15% of its damage off HP, and each block costs the defender 4 stamina plus 0.8 per point of the punch's damage. Holding guard drains 5 stamina per second, so you cannot turtle forever.
+- **Guard** blocks any punch but still takes 15% of its damage off HP, and each block costs the defender 4 stamina plus 0.8 per point of the punch's damage. Stamina recovers more slowly while you hold guard (see Stamina).
 - **Duck** dodges head shots.
 - **Slip** dodges straights (jab and cross) when you slip away from the side the punch lands on. An attacker's right hand lands on your left, so slip right to dodge it, and vice versa.
 - **Stagger:** a clean head shot other than a jab that deals 12 or more staggers the defender.
-- **Stamina:** 100 max. Punches cost jab 6, cross 10, hook 12, uppercut 14. Recovery starts 600 ms after your last punch at 15 per second, but only while your guard is down. Below 30 you are gassed: your punches deal x0.6 and your cooldown is longer. At 0 you are exhausted and cannot punch until you recover to 20.
+- **Stamina:** 100 max. Punches cost jab 6, cross 10, hook 12, uppercut 14. Recovery starts 600 ms after your last punch at 15 per second, or 10 per second while you hold guard. (A camera player's hands rest at guard between punches; guard used to drain stamina instead, which left camera players exhausted for good.) Below 30 you are gassed: your punches deal x0.6 and your cooldown is longer. At 0 you are exhausted and cannot punch until you recover to 20.
 - **Knockdown:** at 0 HP you go down and the referee counts one per second. Hold a steady guard to get up: 2 s after the first knockdown, 3.5 s after later ones. You come back with 30 HP (20 HP after the second knockdown) and 50 stamina, and are protected for 1.5 s after the 1.2 s get-up.
 - **KO:** still down at the 10 count.
 - **TKO:** the third knockdown ends the fight.
@@ -119,14 +119,35 @@ flowchart LR
     W["Worker<br/><sub>worker/index.ts</sub>"]
     A[("Static Assets<br/><sub>dist/client</sub>")]
     DO["RoomDO per code<br/><sub>Room + Match, 60 Hz tick</sub>"]
+    DD[("DataDO 'global'<br/><sub>calibrations, prior reservoirs</sub>")]
   end
+  Admin(["scripts/pull-data.ts"])
   C -->|"page, model, WASM, audio"| A
   C -->|"/ws?create=1 or ?code=CODE"| W
   C -->|"/audio-manifest"| W
+  C -.->|"/api/calibration (opt-in), /api/prior"| W
   W -->|"audio-manifest.json"| A
   W -->|"upgrade, idFromName(CODE)"| DO
+  W -->|"/api/*, idFromName('global')"| DD
   DO <-->|"same ws protocol"| C
+  Admin -.->|"/api/export, Bearer ADMIN_KEY"| W
 ```
+
+### Shared calibration data
+
+Players can opt in to share each finished calibration, which feeds a population prior that every player's model uses. The checkbox in the camera lobby is off by default; after the first calibration the results screen asks once. The choice is kept in `localStorage`.
+
+What is sent and stored (`shared/calibration-data.ts`): the profile's samples (hand, label and the 17-number motion features per segment, plus head/body for straights when known), verify scores (move id, right reads, tries), stance, pose model, frame rate, the head/body line and duck/slip thresholds, a random id generated per calibration, the app version and the feature version (4). No video, images, landmarks, names, IP addresses or timestamps finer than the UTC day are stored. The client IP is only hashed with a per-instance salt in memory for the rate limit.
+
+Pipeline (`server/data-store.ts`, the same code in the `DataDO` Durable Object and in the Node dev server, which keeps it in the gitignored `data/calibrations.json`):
+
+1. `POST /api/calibration` rejects bodies over 96 KB, more than 5 uploads per IP per hour and more than 2,000 per day, then validates strictly: version 4, exactly 17 finite features each within +-100, 1 to 400 samples with at least one punch, known labels, sane scores and thresholds. Unknown fields are dropped. A repeated id is ignored.
+2. Calibrations whose verify phase read fewer than half the attempts right are stored but kept out of the prior.
+3. Samples are added to one reservoir of 240 per lead/rear hand and label (so orthodox and southpaw data pool by role).
+4. `GET /api/prior?version=4` returns, per role and label, up to 40 representative real samples (k-means++ and 4 Lloyd steps, then the member nearest each centre) plus per-feature mean and std, about 30 KB. It is cached, stored in the object and rebuilt at most every 5 minutes, only after new data (about 10 ms of CPU warm).
+5. The client loads the prior once per page, maps roles to hands for the player's stance and adds it to the k-NN. Prior distances are multiplied by 1.3, so the player's own samples win unless the prior is clearly closer; it mostly fills moves the player taught poorly or not at all. Without a prior the model is unchanged.
+
+`GET /api/export` returns every stored calibration in pages for retuning thresholds and feature weights. It is disabled unless the `ADMIN_KEY` secret is set (`npx wrangler secret put ADMIN_KEY`, or the `ADMIN_KEY` environment variable for `npm start`) and needs `Authorization: Bearer <key>`. `ADMIN_KEY=... npx tsx scripts/pull-data.ts [base-url]` downloads it all into `data/calibrations-export.json`.
 
 One punch, from camera frame to both screens:
 
@@ -220,7 +241,7 @@ Punch pipeline, per hand:
 1. **Track:** each hand is followed on screen in its own frame: origin between the shoulders, x toward the body midline (mirrored for the left hand so both hands share one frame), y up, in sw. While the hand is slower than 1.5 sw/s its rest position follows it.
 2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. Once the hand turns back (one frame past the furthest point and heading home, or nearly stopped), the motion so far is read right away and fires if it is a punch. Otherwise it is followed on and read again when it ends: back to 80% of that distance, stalled for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts) or has settled for 350 ms, so a retraction never becomes a motion of its own.
 3. **Gate:** the motion must travel at least 0.55 sw and reach 4 sw/s (speeds measured over frame gaps longer than 50 ms are scaled up, by at most 1/0.75, since they average over more of the punch). A mostly vertical motion while the other hand moves the same way by at least 60% as much (raising or dropping the guard) is not a punch. This applies whichever classifier is active.
-4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the learned height line gives head or body. Without a profile the hand-written rules decide.
+4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the player's own head and body reps give the target (see Moves). When the shared population prior is available its samples join the player's own at 1.3 times their distance (see Shared calibration data). Without a profile the hand-written rules decide.
 5. **Fire:** the punch is sent with the peak time, on the frame after the peak in most cases.
 
 Defense, every frame:
@@ -229,7 +250,7 @@ Defense, every frame:
 - **Duck and slip** fire when the offset passes 0.55 sw down or 0.5 sw sideways. The teach step personalizes each to half of the deepest duck or slip you showed, if it reached at least 60% of the default, and never below half the default. Slips are ignored during a hand motion and for 300 ms after, since punching moves the head.
 - **Guard** needs both hands out of a motion, slow and up by the face. The height and head-distance limits are the defaults or, if looser, your calibrated guard position plus 0.3 sw, with 0.2 sw of hysteresis once held.
 
-Accuracy is measured against hand-checked rep times (`scripts/eval-gt.ts`) on the 12 recorded clips in `tests/fixtures/` (one orthodox player, 39 reps) and on a real teach session (22 reps), replaying the live classifier frame by frame (`scripts/eval-calibration.ts`). Trained on 4 of 5 reps per move, 87% of fixture punches come out exactly right (type and head/body) with 1 extra fire, and the 4 defense clips fire nothing; trained on the first 3 reps, 73%. On the teach session, where most moves only got two real reps, 59% exact and 77% of types right. Punches fire a median 60 ms (p90 124 ms) after the hand-checked peak on the fixtures and 48 ms (p90 113 ms) on the teach session, recorded at about 25 fps. The segmenter finds 35 of 39 fixture reps at full frame rate, 35 at half and 34 at a third (`scripts/eval-speed.ts`); trained at full rate, 30 of 35 and 28 of 34 of those are read right. Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
+Accuracy is measured against hand-checked rep times (`scripts/eval-gt.ts`) on the 12 recorded clips in `tests/fixtures/` (one orthodox player, 39 reps) and on a real teach session (22 reps), replaying the live classifier frame by frame (`scripts/eval-calibration.ts`). Trained on 4 of 5 reps per move, 87% of fixture punches come out exactly right (type and head/body) with 1 extra fire, and the 4 defense clips fire nothing; trained on the first 3 reps, 73%. On the teach session, where most moves only got two real reps and the camera sat high, 73% exact (59% with the old height line, `--line`) and 77% of types right; head or body alone, leave one out over the recorded straights, is 29 of 29 against 25 of 29 for the line (`tests/target.test.ts`). Punches fire a median 60 ms (p90 124 ms) after the hand-checked peak on the fixtures and 48 ms (p90 113 ms) on the teach session, recorded at about 25 fps. The segmenter finds 35 of 39 fixture reps at full frame rate, 35 at half and 34 at a third (`scripts/eval-speed.ts`); trained at full rate, 30 of 35 and 28 of 34 of those are read right. Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
 
 ## Getting Started
 
@@ -267,6 +288,8 @@ npm run deploy
 
 `npm run deploy` builds the client, writes `dist/client/audio-manifest.json` and runs `wrangler deploy`, which prints a `https://keyboard-warrior.<your-subdomain>.workers.dev` URL. `npm run cf:dev` runs the same Worker and Durable Objects locally on http://localhost:8787 without a login.
 
+To enable the calibration data export, set a secret once with `npx wrangler secret put ADMIN_KEY`.
+
 Free plan limits, reset daily at 00:00 UTC: 100,000 Worker requests and 100,000 Durable Object requests (each socket connect is one; incoming WebSocket messages count 20 to 1), and 13,000 GB-s of Durable Object duration, which is about 29 hours of open rooms. Static asset requests are free. Over a limit, new requests fail until the reset. The Node server with `npm run tunnel` remains an option.
 
 Checks:
@@ -288,6 +311,7 @@ npx tsx scripts/eval-session.ts            # train on a teach session, replay a 
 npx tsx scripts/eval-defense.ts            # guard, duck and slip onsets per clip
 npx tsx scripts/dump-segments.ts jab-head  # every motion segment's features in matching clips
 npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense change, --trace for per-frame features
+ADMIN_KEY=... npx tsx scripts/pull-data.ts # download shared calibrations into data/ for retuning
 ```
 
 ### URLs
@@ -306,7 +330,7 @@ npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense cha
 | Flag | Effect |
 | --- | --- |
 | `?keys=1` | Keyboard mode, no camera. Keys below. |
-| `?debug=1` | Shows classifier features, defense state and match numbers, plus the tracker's delegate, pose model, frame rate and detection time. |
+| `?debug=1` | Shows classifier features, defense state and match numbers, plus the tracker's delegate, pose model, frame rate and detection time. In a fight it also shows the last punch decision (and whether it was blocked because you could not punch), the last punch sent, whether the match took it, and how it landed. |
 | `?model=lite` / `?model=full` | Pins the pose model. By default tracking starts on full and drops to lite if it stays under 28 fps for 2 s because detection is the bottleneck (camera frames skipped or detection slower than 28 fps). |
 | `?record=1` | Shows a guided recorder that saves labelled clips of every move into `tests/fixtures/`. See [FIXTURES.md](FIXTURES.md). |
 
@@ -369,18 +393,20 @@ client/
     net/              MatchLink interface and the WebSocket OnlineLink
     practice/         Bot, PracticeLink and the title screen DemoLink
     scene/            Three.js stage, arena, avatars, first-person gloves
-    tracking/         PoseTracker, calibration, classifier, k-NN model, teach step, keyboard input, synthetic poses
+    tracking/         PoseTracker, calibration, classifier, k-NN model, teach step, data sharing, keyboard input, synthetic poses
     ui/               HUD, announcer events, webcam preview, fixture recorder, DOM helpers
     views/            player (first person) and spectator views
 server/
   index.ts            HTTP static server, WebSocket /ws, room registry
   room.ts             one room: players, spectators, authoritative Match
   session.ts          per-socket message handling shared with the Worker
+  data-store.ts       /api calibration upload, prior and export, shared with the Worker
 worker/
-  index.ts            Cloudflare Worker and the RoomDO Durable Object
-wrangler.jsonc        Cloudflare config: assets, Durable Object binding, migration
+  index.ts            Cloudflare Worker, the RoomDO and DataDO Durable Objects
+wrangler.jsonc        Cloudflare config: assets, Durable Object bindings, migrations
 shared/
   types.ts            wire protocol and shared types
+  calibration-data.ts upload validation and population prior computation
   rules.ts            every game number
   match.ts            match simulation used by server and practice mode
   hit.ts              hit resolution against defense history
@@ -391,6 +417,7 @@ scripts/
   eval-*.ts           classifier evaluation on recorded fixtures (eval-core.ts is shared with the tests)
   dump-segments.ts    prints motion segment features
   analyze-fixtures.ts prints classifier decisions per clip
+  pull-data.ts        downloads shared calibrations via /api/export
 tests/                Vitest suites, plus recorded fixtures in tests/fixtures/
 vite.config.ts        Vite config, with a dev-only endpoint that saves recorder clips
 ```

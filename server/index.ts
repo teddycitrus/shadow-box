@@ -1,11 +1,13 @@
-import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { extname, join, normalize, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { ServerMsg } from '../shared/types.ts';
+import { MAX_BODY_BYTES } from '../shared/calibration-data.ts';
+import { CalibrationStore, MemoryKV } from './data-store.ts';
 import { Room, newCode, type Conn } from './room.ts';
 import { MAX_MESSAGE_BYTES, Session, type RoomRegistry } from './session.ts';
 
@@ -19,11 +21,55 @@ const TYPES: Record<string, string> = {
 
 const now = () => performance.now();
 
-export function startServer(port: number, opts: { tickMs?: number } = {}): Promise<{ port: number; close(): Promise<void> }> {
+/** Local stand-in for the Worker's DataDO: the same store, kept in a JSON file (gitignored). */
+function fileStore(file: string): CalibrationStore {
+  let data = new Map<string, unknown>();
+  try {
+    data = new Map(Object.entries(JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>));
+  } catch {
+    // no data yet
+  }
+  const kv = new MemoryKV(data, () => {
+    mkdirSync(resolve(file, '..'), { recursive: true });
+    writeFileSync(`${file}.tmp`, JSON.stringify(Object.fromEntries(kv.data)));
+    renameSync(`${file}.tmp`, file);
+  });
+  return new CalibrationStore(kv);
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((ok, fail) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES + 1) req.destroy();
+      else chunks.push(c);
+    });
+    req.on('end', () => ok(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', fail);
+  });
+}
+
+async function api(store: CalibrationStore, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const r = await store.handle({
+    method: req.method ?? 'GET', path: url.pathname, search: url.searchParams,
+    ip: req.socket.remoteAddress ?? 'unknown', auth: req.headers.authorization ?? null,
+    adminKey: process.env.ADMIN_KEY || undefined, body: () => readBody(req),
+  });
+  res.writeHead(r.status, { 'Content-Type': 'application/json', ...r.headers }).end(JSON.stringify(r.body));
+}
+
+export function startServer(port: number, opts: { tickMs?: number; dataFile?: string } = {}): Promise<{ port: number; close(): Promise<void> }> {
   const rooms = new Map<string, Room>();
+  const store = fileStore(opts.dataFile ?? resolve('data/calibrations.json'));
 
   const http = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
+    if (url.pathname.startsWith('/api/')) {
+      api(store, req, res, url).catch(() => res.headersSent || res.writeHead(500).end());
+      return;
+    }
     if (url.pathname === '/audio-manifest') {
       const dir = join(ROOT, 'audio');
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.mp3')) : []));

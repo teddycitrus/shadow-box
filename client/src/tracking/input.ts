@@ -5,6 +5,7 @@ import { SessionLog } from './session.ts';
 import { Teacher, modelFrom, type MoveScore, type Profile, type TeachStatus } from './teach.ts';
 import type { Lm, PoseFrame } from './frame.ts';
 import { PoseTracker } from './pose.ts';
+import { loadPrior, priorSamples, uploadCalibration } from './share.ts';
 import { PUNCH_TIMING, punchDuration, synthPose, type SynthPunch } from './synthetic.ts';
 
 export interface InputTick {
@@ -92,6 +93,11 @@ export class CameraInput implements InputSource {
     // Dev server only: lets scripted UI checks feed synthetic poses instead of the webcam.
     if (import.meta.env.DEV) (globalThis as { __input?: CameraInput }).__input = this;
     this.tracker.onFrame = (f) => this.handle(f);
+    // The population prior is optional; once it arrives, rebuild an already applied profile with it.
+    void loadPrior().then((pr) => {
+      const p = pr && this.classifier && !this.teacher ? this.loadProfile() : null;
+      if (p) this.apply(p);
+    });
     await this.tracker.start();
   }
 
@@ -129,7 +135,7 @@ export class CameraInput implements InputSource {
 
   private apply(p: Profile): void {
     const c = this.classifier!;
-    const m = modelFrom(p);
+    const m = modelFrom(p, priorSamples(this.stance));
     c.model = m ? (seg) => m.decide(seg, this.stance, p.bodySplit) : undefined;
     c.onSegment = undefined;
     c.defenseThresholds = { ...p.defense };
@@ -195,6 +201,7 @@ export class CameraInput implements InputSource {
         this.log?.mark(f.t, 'teachDone', { learned: p.learned, defense: p.defense, scores: p.scores });
         void this.log?.save('teach', { stance: this.stance, profile: p });
         localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
+        void uploadCalibration(p, { stance: this.stance, fps: this.tracker.fps, model: this.tracker.model });
         this.teacher = null;
         this.apply(p);
       }

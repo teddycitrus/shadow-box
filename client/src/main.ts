@@ -88,7 +88,7 @@ function howTo(): HTMLElement {
       ),
       section('Defense',
         h('ul', { class: 'moves' },
-          h('li', {}, h('b', {}, 'High guard'), 'Both gloves up by your face. Blocks most of the damage, but holding it and absorbing hits drains stamina.'),
+          h('li', {}, h('b', {}, 'High guard'), 'Both gloves up by your face. Blocks most of the damage, but absorbing hits costs stamina, and stamina comes back slower while you hold it.'),
           h('li', {}, h('b', {}, 'Duck'), 'Drop your head well down. Dodges head shots.'),
           h('li', {}, h('b', {}, 'Slip'), 'Move your head to the side. Slip away from a straight to dodge it.'),
         ),

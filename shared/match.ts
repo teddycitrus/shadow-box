@@ -209,13 +209,9 @@ export class Match {
       }
       return;
     }
-    if (guard) {
-      f.stamina = Math.max(0, f.stamina - (RULES.guardDrainPerSec * dt) / 1000);
-      if (f.stamina === 0) f.exhausted = true;
-    } else {
-      const idle = Math.min(dt, g - (f.lastPunchAt + RULES.recoverDelayMs));
-      if (idle > 0) f.stamina = Math.min(RULES.maxStamina, f.stamina + (RULES.recoverPerSec * idle) / 1000);
-    }
+    const idle = Math.min(dt, g - (f.lastPunchAt + RULES.recoverDelayMs));
+    const rate = guard ? RULES.guardRecoverPerSec : RULES.recoverPerSec;
+    if (idle > 0) f.stamina = Math.min(RULES.maxStamina, f.stamina + (rate * idle) / 1000);
     if (f.exhausted && f.stamina >= RULES.exhaustedResumeAt) f.exhausted = false;
   }
 

@@ -29,8 +29,9 @@ export const RULES = {
   blockStaminaPerDamage: 0.8,
   recoverDelayMs: 600,
   recoverPerSec: 15,
-  /** Holding guard does not recover stamina; it slowly drains it. */
-  guardDrainPerSec: 5,
+  /** A camera player's hands rest at guard between punches, so guard still recovers, only slower.
+   *  (Draining it locked camera players out: exhausted, holding guard, never recovering.) */
+  guardRecoverPerSec: 10,
   gassedBelow: 30,
   exhaustedResumeAt: 20,
 

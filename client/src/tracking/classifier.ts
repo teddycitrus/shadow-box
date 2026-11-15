@@ -402,9 +402,9 @@ export class Classifier {
     const seg = early ?? this.segment(hand, st, a, chinY, t);
     this.onSegment?.(seg);
     const r = read ?? this.decide(seg);
-    this.lastDecision = r.why;
     const punch = r.punch;
-    this.onDecision?.(seg, punch, `${this.lastDecision ?? ''}${punch && !this.canPunch ? ' (blocked: cannot punch now)' : ''}`);
+    this.lastDecision = `${r.why}${punch && !this.canPunch ? ' (blocked: cannot punch now)' : ''}`;
+    this.onDecision?.(seg, punch, this.lastDecision);
     st.fired = !!punch && this.canPunch;
     if (!st.fired) return null;
     st.lastFire = t;

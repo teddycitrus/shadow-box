@@ -7,11 +7,17 @@
     "directory": "./dist/client",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/ws", "/audio-manifest"]
+    "run_worker_first": ["/ws", "/audio-manifest", "/api/*"]
   },
   "durable_objects": {
-    "bindings": [{ "name": "ROOMS", "class_name": "RoomDO" }]
+    "bindings": [
+      { "name": "ROOMS", "class_name": "RoomDO" },
+      { "name": "DATA", "class_name": "DataDO" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RoomDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["DataDO"] }
+  ],
   "observability": { "enabled": true }
 }
