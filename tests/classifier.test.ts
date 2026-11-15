@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fixtureReps, labelledSegments, loadFixtures, scoreCalibration, type Recording } from '../scripts/eval-core.ts';
 import { Calibrator, framingCheck, measure } from '../client/src/tracking/calibration.ts';
 import { Classifier } from '../client/src/tracking/classifier.ts';
-import { KnnModel, vector } from '../client/src/tracking/model.ts';
-import { splitFrom } from '../client/src/tracking/teach.ts';
+import { KnnModel, headHeight, headLineFrom, vector } from '../client/src/tracking/model.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
 import { synthFrame, type SynthState } from '../client/src/tracking/synthetic.ts';
 import { NO_DEFENSE, type DefenseState, type Punch, type PunchType, type Stance, type Target } from '../shared/types.ts';
@@ -155,11 +154,11 @@ describe('recorded fixtures (tests/fixtures, see FIXTURES.md)', () => {
 
   it.skipIf(!hasPunches)('fires right after the peak instead of waiting for the retraction', () => {
     const m = new KnnModel(segs.map((s) => ({ hand: s.seg.hand, label: s.label, v: vector(s.seg) })));
-    const split = splitFrom(segs.filter((s) => s.label === 'straight').map((s) => ({ hand: s.seg.hand, y: s.seg.peakY, body: s.target === 'body' })));
+    const line = headLineFrom(segs.filter((s) => s.label === 'straight').map((s) => ({ hand: s.seg.hand, h: headHeight(s.seg), target: s.target })));
     const lags: number[] = [];
     for (const { rec } of fixtures.filter((f) => f.rec.expected?.length)) {
       const c = new Classifier(rec.calibration!);
-      c.model = (seg) => m.decide(seg, 'orthodox', split);
+      c.model = (seg) => m.decide(seg, 'orthodox', line);
       rec.frames.forEach((f, i) => {
         // Frames from the peak to the frame the punch fired on.
         for (const p of c.update(f).punches) lags.push(i - rec.frames.findIndex((g) => g.t === p.at));

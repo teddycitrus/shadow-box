@@ -84,7 +84,7 @@ function howTo(): HTMLElement {
           h('li', {}, h('b', {}, 'Hook'), 'Elbow bent, hand at shoulder height, swing across.'),
           h('li', {}, h('b', {}, 'Uppercut'), 'Start below your chin and drive the fist up.'),
         ),
-        h('p', { class: 'note' }, 'Punch high for the head, low for the body. Return your hand to guard before throwing it again.'),
+        h('p', { class: 'note' }, 'Every punch is a body shot unless you aim it clearly high: fist at your eye level for the head (uppercuts up to your chin). Return your hand to guard before throwing it again.'),
       ),
       section('Defense',
         h('ul', { class: 'moves' },

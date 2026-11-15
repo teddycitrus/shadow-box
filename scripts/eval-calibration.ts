@@ -7,8 +7,8 @@ import type { Hand, Punch, PunchType, Target } from '../shared/types.ts';
 import { CONFIG } from '../client/src/config.ts';
 import { Classifier, passesGate, type Segment } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
-import { KnnModel, kindOf, setTargetFeatures, vector, type Label } from '../client/src/tracking/model.ts';
-import { handFor, pickReps, pruneOutliers, splitFrom, teachSteps } from '../client/src/tracking/teach.ts';
+import { KnnModel, headHeight, headLineFrom, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
+import { handFor, pickReps, pruneOutliers, type TeachStep } from '../client/src/tracking/teach.ts';
 import { loadFixtures, segmentsOf, type Recording } from './eval-core.ts';
 import { FIXTURE_REPS, TEACH_REPS, TEACH_SESSION } from './eval-gt.ts';
 
@@ -22,18 +22,14 @@ interface Taught { seg: Segment; type: PunchType | null; target: Target }
 
 // ---- pipeline adapter: the only part that knows the model API ----
 const prune = !process.argv.includes('--no-prune');
-const lineOnly = process.argv.includes('--line');
-const tf = process.argv.find((a) => a.startsWith('--tf='));
-if (tf) setTargetFeatures(tf.slice(5).split(',').map(Number));
 function train(taught: Taught[]): Decide {
   const gated = taught.filter((x) => passesGate(x.seg)).map((x) => ({ ...x, label: x.type ? kindOf(x.type) : ('none' as Label) }));
   const kept = prune ? pruneOutliers(gated) : gated;
-  // --line: head/body by the height line only (no taught targets), as before TargetModel.
-  const samples = kept.map((x) => ({ hand: x.seg.hand, label: x.label, v: vector(x.seg), ...(x.type && !lineOnly ? { target: x.target } : {}) }));
+  const samples = kept.map((x) => ({ hand: x.seg.hand, label: x.label, v: vector(x.seg), ...(x.type ? { target: x.target } : {}) }));
   if (!samples.some((s) => s.label !== 'none')) return () => null;
   const m = new KnnModel(samples);
-  const split = splitFrom(kept.filter((x) => x.label === 'straight').map((x) => ({ hand: x.seg.hand, y: x.seg.peakY, body: x.target === 'body' })));
-  return (s) => m.decide(s, 'orthodox', split);
+  const line = headLineFrom(kept.filter((x) => x.label === 'straight').map((x) => ({ hand: x.seg.hand, h: headHeight(x.seg), target: x.target })));
+  return (s) => m.decide(s, 'orthodox', line);
 }
 /** What the live teacher would have taken as reps from one prompt's motions. */
 function teacherPick(segs: Segment[], hand: Hand, n: number): Segment[] {
@@ -183,7 +179,7 @@ print('leave one rep out (4-shot)', fixtureLoo());
 
 // ---- teach session ----
 const sessionFile = `tests/fixtures/sessions/${TEACH_SESSION}`;
-const sess = JSON.parse(readFileSync(sessionFile, 'utf8')) as Recording & { marks: { t: number; kind: string; data?: { kind?: string } }[] };
+const sess = JSON.parse(readFileSync(sessionFile, 'utf8')) as Recording & { marks: { t: number; kind: string; data?: Partial<TeachStep> }[] };
 const st0 = sess.frames[0].t;
 const sreps = TEACH_REPS.map((r) => ({ ...r, hand: handFor(r.type, 'orthodox') }));
 const ssegs = segmentsOf(sess);
@@ -200,10 +196,10 @@ const teachFrom = prompts[0].t, teachTo = prompts.find((m) => m.data?.kind === '
   console.log('\n== teach session (real calibration, 22 reps over 8 prompts)');
   print('leave one rep out, oracle labels', sc);
   // The live teacher's own labels: pickReps on each punch prompt's motions, the rest non-punches.
-  const steps = teachSteps();
   const tl: Taught[] = [];
   for (let i = 0; i < prompts.length; i++) {
-    const step = steps.find((x) => x.id === (prompts[i].data as { id?: string } | undefined)?.id);
+    // The step as recorded (this session predates the current step list).
+    const step = prompts[i].data;
     const inWin = ssegs.filter((x) => passesGate(x) && x.peakT >= prompts[i].t + CONFIG.model.stepGraceMs && x.peakT < (prompts[i + 1]?.t ?? Infinity));
     if (step?.kind !== 'punch') {
       tl.push(...inWin.map((seg) => ({ seg, type: null, target: 'head' as Target })));

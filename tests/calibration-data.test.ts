@@ -11,7 +11,7 @@ const vec = (base: number) => Array.from({ length: FEATURE_COUNT }, (_, i) => ba
 
 function upload(over: Partial<CalibrationUpload> = {}): Record<string, unknown> {
   return {
-    version: 4, id: `cal-${Math.floor(rng() * 1e9)}`, client: '0.1.0', stance: 'orthodox', fps: 30, model: 'full',
+    version: 5, id: `cal-${Math.floor(rng() * 1e9)}`, client: '0.1.0', stance: 'orthodox', fps: 30, model: 'full',
     samples: [
       { hand: 'left', label: 'straight', v: vec(1), target: 'body' },
       { hand: 'right', label: 'hook', v: vec(-1) },
@@ -43,7 +43,7 @@ describe('validateCalibration', () => {
   });
 
   it.each([
-    ['wrong version', { version: 3 }],
+    ['wrong version', { version: 4 }],
     ['bad id', { id: 'short' }],
     ['bad stance', { stance: 'boxer' }],
     ['fps out of range', { fps: 1000 }],
@@ -118,7 +118,7 @@ describe('prior', () => {
 
 describe('CalibrationStore', () => {
   const req = (over: Partial<ApiRequest> & { raw?: string }): ApiRequest => ({
-    method: 'GET', path: '/api/prior', search: new URLSearchParams('version=4'), ip: '1.2.3.4', auth: null, adminKey: undefined,
+    method: 'GET', path: '/api/prior', search: new URLSearchParams('version=5'), ip: '1.2.3.4', auth: null, adminKey: undefined,
     body: async () => over.raw ?? '', ...over,
   });
 
@@ -144,7 +144,7 @@ describe('CalibrationStore', () => {
     const prior = (await store.handle(req({}))).body as { calibrations: number; groups: unknown[] };
     expect(prior.calibrations).toBe(UPLOADS_PER_HOUR);
     expect(prior.groups.length).toBe(3);
-    expect((await store.handle(req({ search: new URLSearchParams('version=3') }))).status).toBe(404);
+    expect((await store.handle(req({ search: new URLSearchParams('version=4') }))).status).toBe(404);
   });
 
   it('ignores duplicate ids and leaves poorly verified calibrations out of the prior', async () => {
@@ -153,7 +153,21 @@ describe('CalibrationStore', () => {
     expect((await store.submit(JSON.stringify(a), 'a')).status).toBe(201);
     expect((await store.submit(JSON.stringify(a), 'a')).body).toEqual({ ok: true, duplicate: true });
     expect((await store.submit(JSON.stringify(upload({ scores: [{ id: 'jab-head', ok: 0, tries: 4 }] })), 'a')).status).toBe(201);
-    expect(((await store.getPrior('4')).body as { calibrations: number }).calibrations).toBe(1);
+    expect(((await store.getPrior('5')).body as { calibrations: number }).calibrations).toBe(1);
+  });
+
+  it('keeps the built prior per version and rebuilds it from the reservoirs after a bump', async () => {
+    const kv = new MemoryKV();
+    const store = new CalibrationStore(kv, () => 0, seeded(5));
+    expect((await store.submit(JSON.stringify(upload()), 'a')).status).toBe(201);
+    // A prior stored by the previous version is left alone and never served.
+    kv.data.set('prior', { at: 0, value: { version: 4, updated: 0, calibrations: 1, mean: [], std: [], groups: [] } });
+    const fresh = new CalibrationStore(kv, () => 0, seeded(5));
+    const p = (await fresh.getPrior('5')).body as { version: number; calibrations: number; groups: unknown[] };
+    expect(p.version).toBe(5);
+    expect(p.calibrations).toBe(1);
+    expect(p.groups.length).toBe(3);
+    expect(kv.data.has('prior:v5')).toBe(true);
   });
 
   it('export is disabled without ADMIN_KEY and needs the bearer key', async () => {

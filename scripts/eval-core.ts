@@ -6,8 +6,8 @@ import type { PunchType, Stance, Target } from '../shared/types.ts';
 import type { Calibration } from '../client/src/tracking/calibration.ts';
 import { Classifier, passesGate, type Segment } from '../client/src/tracking/classifier.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
-import { KnnModel, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
-import { handFor, splitFrom } from '../client/src/tracking/teach.ts';
+import { KnnModel, headHeight, headLineFrom, kindOf, vector, type Label } from '../client/src/tracking/model.ts';
+import { handFor } from '../client/src/tracking/teach.ts';
 import { FIXTURE_REPS } from './eval-gt.ts';
 
 export interface Recording {
@@ -93,10 +93,10 @@ export function scoreCalibration(all: LabelledSegment[], shots = 3): Score {
     for (const s of segs) (s.seg.endT <= cut ? train : test).push(s);
   }
   const m = new KnnModel(train.map((s) => ({ hand: s.seg.hand, label: s.label, v: vector(s.seg) })));
-  const split = splitFrom(train.filter((s) => s.label === 'straight').map((s) => ({ hand: s.seg.hand, y: s.seg.peakY, body: s.target === 'body' })));
+  const line = headLineFrom(train.filter((s) => s.label === 'straight').map((s) => ({ hand: s.seg.hand, h: headHeight(s.seg), target: s.target })));
   const score: Score = { punches: 0, exact: 0, nonPunches: 0, falseFires: 0 };
   for (const s of test) {
-    const p = m.decide(s.seg, 'orthodox', split);
+    const p = m.decide(s.seg, 'orthodox', line);
     if (s.label === 'none') {
       score.nonPunches++;
       if (p) score.falseFires++;

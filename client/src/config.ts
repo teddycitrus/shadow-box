@@ -61,8 +61,14 @@ export const CONFIG = {
     cooldownMs: 250,
     gassedCooldownMs: 450,
     swFollowMs: 1_000,
-    /** Default head/body line (wrist height at the peak, sw below the shoulder line) until a player teaches their own. */
-    headBodySplit: -0.2,
+    /**
+     * Head line: a punch is a body shot unless the fist peaks at least this high relative to the
+     * nose (sw, up positive). The default is nose level; calibration moves it within
+     * [headLineMin, headLineMax] from the player's own head and body straights.
+     */
+    headLine: 0,
+    headLineMin: -0.25,
+    headLineMax: 0.5,
   },
 
   straight: {
@@ -114,8 +120,6 @@ export const CONFIG = {
     minStd: 0.1,
     /** A hook or uppercut within this factor of the nearest straight's distance is read as the straight. */
     straightMargin: 1.0,
-    /** Neighbours voting on head or body among the player's own reps of that punch. */
-    targetK: 3,
     /** Verify: a punch read as no punch drops at most this many of the non-punch examples nearest to it. */
     maxShadowDrop: 2,
     repsPerMove: 5,

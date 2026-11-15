@@ -37,6 +37,12 @@ export const UPLOADS_PER_HOUR = 5;
 export const UPLOADS_PER_DAY = 2_000;
 const HOUR = 3_600_000;
 const EXPORT_PAGE = 200;
+/**
+ * The built prior is stored per data version, so a version bump starts a fresh one instead of
+ * serving the old version's (which clients reject). The reservoirs hold only segment features and
+ * punch kinds, which did not change from version 4 to 5, so they carry over.
+ */
+const PRIOR_KEY = `prior:v${DATA_VERSION}`;
 
 export class CalibrationStore {
   private res: Map<string, Reservoir> | null = null;
@@ -101,7 +107,7 @@ export class CalibrationStore {
       // Rebuilt at most every PRIOR_TTL_MS and stored, so a restarted object does not redo it.
       this.prior = { at: t, value: computePrior(this.res!, this.calibrations, t, this.rng) };
       this.dirty = false;
-      await this.kv.put({ prior: this.prior });
+      await this.kv.put({ [PRIOR_KEY]: this.prior });
     }
     return { status: 200, body: this.prior.value, headers: { 'Cache-Control': `public, max-age=${PRIOR_TTL_MS / 1000}` } };
   }
@@ -120,7 +126,7 @@ export class CalibrationStore {
     const res = new Map<string, Reservoir>();
     for (const [k, v] of await this.kv.list<Reservoir>('res:', undefined, 64)) res.set(k.slice(4), v);
     this.calibrations = (await this.kv.get<{ calibrations: number }>('meta'))?.calibrations ?? 0;
-    this.prior ??= (await this.kv.get<{ at: number; value: Prior }>('prior')) ?? null;
+    this.prior ??= (await this.kv.get<{ at: number; value: Prior }>(PRIOR_KEY)) ?? null;
     this.dirty = this.prior?.value.calibrations !== this.calibrations;
     this.res = res;
   }

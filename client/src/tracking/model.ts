@@ -4,7 +4,7 @@ import type { PathPoint, Segment } from './classifier.ts';
 
 /**
  * The model learns the punch shape per hand only; the hand and stance give the exact punch, and
- * the player's own head and body reps give the target (TargetModel). `none` marks motions that are not punches
+ * the fist height against the player's head line gives the target (targetOf). `none` marks motions that are not punches
  * (adjusting the guard, dropping or raising the hands, wind-ups).
  */
 export type Kind = 'straight' | 'hook' | 'uppercut';
@@ -20,14 +20,38 @@ export function punchOf(kind: Kind, hand: Hand, stance: Stance): PunchType {
   return `${hand}${kind === 'hook' ? 'Hook' : 'Uppercut'}` as PunchType;
 }
 
-/** Wrist height at the peak (sw below the shoulder line) past which a straight is a body shot, per hand. */
-export type BodySplit = Record<Hand, number>;
+/**
+ * Per hand: the lowest fist peak, in sw above the nose (negative is below), that still reads as a
+ * head shot. Everything below it is a body shot.
+ */
+export type HeadLine = Record<Hand, number>;
+
+export const DEFAULT_HEAD_LINE: HeadLine = { left: CONFIG.punch.headLine, right: CONFIG.punch.headLine };
+
+/** Fist height at the peak relative to the nose, in sw (up positive). */
+export function headHeight(s: Pick<Segment, 'peak' | 'nose'>): number {
+  return s.peak.y - s.nose.y;
+}
+
+/**
+ * Head or body. Every punch is a body shot unless the fist clearly went high: at or above the
+ * player's head line for straights, at or above the line but never stricter than nose level for
+ * hooks (a hook does not come toward the camera, so it does not rise on screen like a straight),
+ * and up to chin level for uppercuts. The chin sits 45% of the way from the nose to the shoulder
+ * line (as in the classifier), so it is 0.45 of the nose height below the nose.
+ * Picked on the recorded reps (scripts/eval-target.ts).
+ */
+export function targetOf(s: Pick<Segment, 'hand' | 'peak' | 'nose'>, kind: Kind, line: HeadLine = DEFAULT_HEAD_LINE): Target {
+  const l = line[s.hand];
+  const need = kind === 'straight' ? l : Math.min(l, CONFIG.punch.headLine) - (kind === 'uppercut' ? 0.45 * s.nose.y : 0);
+  return headHeight(s) >= need ? 'head' : 'body';
+}
 
 export interface Sample {
   hand: Hand;
   label: Label;
   v: number[];
-  /** Head or body, on taught punch reps (older profiles and prior samples have none). */
+  /** Head or body, on taught punch reps (prior samples have none). */
   target?: Target;
 }
 
@@ -107,8 +131,6 @@ export class KnnModel {
 
   /** Population prior samples, normalized like the player's own and matched at PRIOR_PENALTY times their distance. */
   private prior: Sample[] = [];
-  /** Head or body from the player's own reps (prior samples carry no target). */
-  private targets: TargetModel;
 
   constructor(samples: Sample[], private k: number = CONFIG.model.k, rejectScale: number = CONFIG.model.rejectScale, prior: Sample[] = []) {
     const n = samples[0]?.v.length ?? 0;
@@ -121,7 +143,6 @@ export class KnnModel {
       this.std.push(sd);
     }
     this.data = samples.map((s) => ({ ...s, v: this.norm(s.v) }));
-    this.targets = new TargetModel(samples);
     if (n) this.prior = prior.filter((s) => s.v.length === n).map((s) => ({ ...s, v: this.norm(s.v) }));
     const nn = this.data
       .filter((s) => s.label !== 'none')
@@ -168,70 +189,36 @@ export class KnnModel {
   }
 
   /** Classifier hook: a punch, or null for a non-punch. */
-  decide(s: Segment, stance: Stance, split: BodySplit): Punch | null {
-    const v = vector(s);
-    const label = confident(this.predict(s.hand, v));
+  decide(s: Segment, stance: Stance, line: HeadLine = DEFAULT_HEAD_LINE): Punch | null {
+    const label = confident(this.predict(s.hand, vector(s)));
     if (label === 'none') return null;
-    const target: Target = this.targets.target(s.hand, label, v) ?? (label === 'straight' && s.peakY > split[s.hand] ? 'body' : 'head');
-    return { type: punchOf(label, s.hand, stance), hand: s.hand, target };
+    return { type: punchOf(label, s.hand, stance), hand: s.hand, target: targetOf(s, label, line) };
   }
 }
 
 /**
- * Head/body features, as indices into vector(): where the fist ends up relative to the nose, in
- * sw, in the hand's mirrored frame. Relative to the player's own body, so it holds up across
- * camera heights, unlike a fixed height line (from a high camera a head jab can end below the
- * shoulders on screen). Picked by leave-one-out on the recorded reps: 29/29 against 25/29 for the
- * height line (scripts/eval-calibration.ts --line compares).
+ * The player's head line per hand, from their taught straights (height = headHeight of the rep):
+ * midway between the median head rep and the median body rep of that hand, falling back to both
+ * hands together and then to nose level, and always clamped to [headLineMin, headLineMax], so a
+ * head shot never needs less than a fist at about chin height.
  */
-export let TARGET_FEATURES: number[] = [2, 3];
-export function setTargetFeatures(f: number[]): void {
-  TARGET_FEATURES = f;
-}
-
-/** The other hand's reps count, at this multiple of their distance. */
-const OTHER_HAND_PENALTY = 1.2;
-
-/**
- * Head or body by nearest neighbours among the player's own reps of the same punch, taught to
- * both targets. Both hands' reps are used (in each hand's mirrored frame they land in the same
- * places, and five reps per target and hand is too few on its own), the other hand's slightly
- * further away. Returns null when the punch was never taught to both head and body; the caller
- * then uses the height line for straights and head for the rest.
- */
-export class TargetModel {
-  private groups = new Map<Kind, { mean: number[]; std: number[]; data: { hand: Hand; target: Target; v: number[] }[] }>();
-
-  constructor(samples: Sample[]) {
-    const reps = samples.filter((s) => s.label !== 'none' && s.target);
-    for (const kind of ['straight', 'hook', 'uppercut'] as Kind[]) {
-      const xs = reps.filter((s) => s.label === kind);
-      if (xs.some((s) => s.target === 'head') && xs.some((s) => s.target === 'body')) this.groups.set(kind, fit(xs));
-    }
-  }
-
-  target(hand: Hand, kind: Kind, v: number[]): Target | null {
-    const g = this.groups.get(kind);
-    if (!g) return null;
-    const x = TARGET_FEATURES.map((i, j) => (v[i] - g.mean[j]) / g.std[j]);
-    const near = g.data
-      .map((s) => ({ s, d: dist(s.v, x) * (s.hand === hand ? 1 : OTHER_HAND_PENALTY) }))
-      .sort((a, b) => a.d - b.d)
-      .slice(0, CONFIG.model.targetK);
-    let head = 0, body = 0;
-    for (const { s, d } of near) {
-      if (s.target === 'body') body += 1 / (d + 0.3);
-      else head += 1 / (d + 0.3);
-    }
-    return body > head ? 'body' : 'head';
-  }
-}
-
-function fit(xs: Sample[]): { mean: number[]; std: number[]; data: { hand: Hand; target: Target; v: number[] }[] } {
-  const cols = TARGET_FEATURES.map((i) => xs.map((s) => s.v[i]));
-  const mean = cols.map((c) => c.reduce((a, b) => a + b, 0) / c.length);
-  const std = cols.map((c, j) => Math.max(CONFIG.model.minStd, Math.sqrt(c.reduce((a, b) => a + (b - mean[j]) ** 2, 0) / c.length)));
-  return { mean, std, data: xs.map((s) => ({ hand: s.hand, target: s.target!, v: TARGET_FEATURES.map((i, j) => (s.v[i] - mean[j]) / std[j]) })) };
+export function headLineFrom(straights: { hand: Hand; h: number; target: Target }[]): HeadLine {
+  const p = CONFIG.punch;
+  const med = (a: number[]) => {
+    const s = [...a].sort((x, y) => x - y);
+    return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  };
+  const line = (xs: typeof straights): number | null => {
+    const head = xs.filter((x) => x.target === 'head').map((x) => x.h), body = xs.filter((x) => x.target === 'body').map((x) => x.h);
+    if (!head.length || !body.length || med(head) <= med(body)) return null;
+    return (med(head) + med(body)) / 2;
+  };
+  const clamp = (v: number) => Math.max(p.headLineMin, Math.min(p.headLineMax, v));
+  const both = line(straights) ?? p.headLine;
+  return {
+    left: clamp(line(straights.filter((x) => x.hand === 'left')) ?? both),
+    right: clamp(line(straights.filter((x) => x.hand === 'right')) ?? both),
+  };
 }
 
 /**

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { NO_DEFENSE, type DefenseState, type MatchEvent, type MatchSnapshot, type Punch, type PunchType, type Target } from '../shared/types.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
 import { synthFrame, type SynthState } from '../client/src/tracking/synthetic.ts';
-import { handFor, type TeachStatus } from '../client/src/tracking/teach.ts';
+import { REST_STEP_MS, handFor, type TeachStatus } from '../client/src/tracking/teach.ts';
 
 /**
  * The whole chain a camera player goes through, with synthetic poses: guard calibration, the
@@ -51,7 +51,7 @@ function frame(handle: Handle, st: Omit<SynthState, 't'>): number {
 /** Plays the guided teaching through CameraInput's own Teacher, answering every prompt. */
 function teachThrough(input: { teach: TeachStatus | null; calibrated: boolean }, handle: Handle): void {
   let punchAt = 0, stepStart = 0, thrown = false;
-  let throwType: PunchType | null = null, throwTarget: Target = 'head';
+  let throwType: PunchType | null = null, throwTarget: Target = 'body';
   let key = '';
   for (let i = 0; i < 20_000 && !input.calibrated; i++) {
     const s = input.teach;
@@ -72,7 +72,7 @@ function teachThrough(input: { teach: TeachStatus | null; calibrated: boolean },
       st = { defense: NO_DEFENSE, punch: { type: step.type!, hand: handFor(step.type!, 'orthodox'), target: step.target!, startT: punchAt + 100, windupMs: 60 } };
     } else if (step?.kind === 'rest') {
       const k = Math.floor((t - stepStart) / 900) % 2 === 1;
-      st = step.id === 'drop' ? { defense: NO_DEFENSE, gassed: k } : { defense: k ? GUARD : NO_DEFENSE };
+      st = step.id === 'drop' ? { defense: NO_DEFENSE, gassed: k && t - stepStart < REST_STEP_MS - 1500 } : { defense: k ? GUARD : NO_DEFENSE };
     } else if (step) {
       const on = t - stepStart > 300 && t - stepStart < 1500;
       st = { defense: { ...NO_DEFENSE, duck: on && step.kind === 'duck', slip: on && step.kind === 'slipLeft' ? 'left' : on && step.kind === 'slipRight' ? 'right' : 'none' } };
@@ -105,7 +105,7 @@ describe('camera player, calibration to fight', async () => {
     teachThrough(input, handle);
     expect(input.calibrated).toBe(true);
     expect(input.learned).toHaveLength(8);
-    expect(store.get('shadowbox:profile:v4')).toBeTruthy();
+    expect(store.get('shadowbox:profile:v5')).toBeTruthy();
   });
 
   it('lands the punches it was taught in a practice fight against the bot', () => {
@@ -148,8 +148,8 @@ describe('camera player, calibration to fight', async () => {
     // A fighter's rhythm: a punch, back to guard, a short pause, for 25 seconds. Between punches the
     // hands rest where they rested while teaching, which the classifier reads as a guard.
     const order: [PunchType, Target][] = [
-      ['jab', 'head'], ['cross', 'head'], ['leftHook', 'head'], ['jab', 'body'], ['rightUppercut', 'head'],
-      ['cross', 'body'], ['rightHook', 'head'], ['leftUppercut', 'head'],
+      ['jab', 'head'], ['cross', 'head'], ['leftHook', 'body'], ['jab', 'body'], ['rightUppercut', 'body'],
+      ['cross', 'body'], ['rightHook', 'body'], ['leftUppercut', 'body'],
     ];
     let thrown = 0, guardFrames = 0, frames = 0, exhaustedSince: number | null = null, longestExhausted = 0;
     const end = performance.now() + 25_000;

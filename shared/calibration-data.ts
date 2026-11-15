@@ -3,7 +3,7 @@
 import type { Hand, Stance, Target } from './types.ts';
 
 /** Feature-vector version. Matches the client Profile version; bump both together. */
-export const DATA_VERSION = 4;
+export const DATA_VERSION = 5;
 export const FEATURE_COUNT = 17;
 export const MAX_SAMPLES = 400;
 export const MAX_SCORES = 24;

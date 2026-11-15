@@ -234,7 +234,8 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       h('div', { class: 'teach-step' }, `${right} / ${tries} read right`),
       h('div', { class: 'teach-move' }, 'Calibrated'),
       h('div', { class: 'teach-scores' }, ...input.scores.map((m) =>
-        h('div', { class: m.ok >= CONFIG.model.verifyPasses ? 'ok' : 'bad' }, h('span', {}, m.prompt), h('b', {}, `${m.ok}/${m.tries}`)))),
+        h('div', { class: m.ok >= CONFIG.model.verifyPasses ? 'ok' : 'bad' },
+          h('span', {}, m.wrongTarget ? `${m.prompt} (${m.wrongTarget} at the wrong height)` : m.prompt), h('b', {}, `${m.ok}/${m.tries}`)))),
     );
     if (shareConsent() === null && hasPendingUpload()) {
       // Asked once, after the first finished calibration; the lobby checkbox changes it later.

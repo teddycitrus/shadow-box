@@ -3,7 +3,7 @@ import { measure } from '../client/src/tracking/calibration.ts';
 import { Classifier, type Segment } from '../client/src/tracking/classifier.ts';
 import { KnnModel, type Label } from '../client/src/tracking/model.ts';
 import { synthFrame, type SynthState } from '../client/src/tracking/synthetic.ts';
-import { Teacher, handFor, modelFrom, pickReps, pruneOutliers, type TeachStatus } from '../client/src/tracking/teach.ts';
+import { REST_STEP_MS, Teacher, handFor, modelFrom, pickReps, pruneOutliers, type TeachStatus } from '../client/src/tracking/teach.ts';
 import { CONFIG } from '../client/src/config.ts';
 import { NO_DEFENSE, type DefenseState, type Punch, type PunchType, type Target } from '../shared/types.ts';
 
@@ -13,10 +13,10 @@ const cal = measure(Array.from({ length: 15 }, (_, i) => synthFrame({ t: i * DT,
 
 /**
  * Plays the whole guided calibration with synthetic moves and returns the trained profile.
- * `misread` makes the first verify attempt of that move a different punch, to check that the
- * move comes back until it is read right.
+ * `misread` makes the first verify attempt of that move a different punch (or the same punch at
+ * another target), to check that the move comes back until it is read right.
  */
-function teach(misread?: { prompt: string; throw: PunchType }) {
+function teach(misread?: { prompt: string; throw: PunchType; target?: Target }) {
   const teacher = new Teacher('orthodox');
   const c = new Classifier(cal);
   c.model = (s) => teacher.decide(s);
@@ -29,7 +29,7 @@ function teach(misread?: { prompt: string; throw: PunchType }) {
   let thrown = false;
   let misreadDone = false;
   let throwType: PunchType | null = null;
-  let throwTarget: Target = 'head';
+  let throwTarget: Target = 'body';
   let s: TeachStatus | null = null;
   const results: string[] = [];
   for (let guard = 0; guard < 20000 && !teacher.done; guard++) {
@@ -42,7 +42,7 @@ function teach(misread?: { prompt: string; throw: PunchType }) {
         const wrong = misread && !misreadDone && step.prompt === misread.prompt;
         if (wrong) misreadDone = true;
         throwType = wrong ? misread!.throw : step.type!;
-        throwTarget = wrong ? 'head' : step.target!;
+        throwTarget = wrong ? misread!.target ?? step.target! : step.target!;
       }
       if (s.verify!.result) thrown = false;
       if (throwType) st = { t, defense: NO_DEFENSE, punch: { type: throwType, hand: handFor(throwType, 'orthodox'), target: throwTarget, startT: punchAt, windupMs: 60 } };
@@ -50,9 +50,9 @@ function teach(misread?: { prompt: string; throw: PunchType }) {
       if (t - punchAt > 800) punchAt = t;
       st = { t, defense: NO_DEFENSE, punch: { type: step.type!, hand: handFor(step.type!, 'orthodox'), target: step.target!, startT: punchAt + 100, windupMs: 60 } };
     } else if (step?.kind === 'rest') {
-      // Guard up and down, then dropping the hands (gassed pose) and raising them again.
+      // Guard up and down, then dropping the hands (gassed pose) and raising them again, ending at guard.
       const k = Math.floor((t - stepStart) / 900) % 2 === 1;
-      st = step.id === 'drop' ? { t, defense: NO_DEFENSE, gassed: k } : { t, defense: k ? GUARD : NO_DEFENSE };
+      st = step.id === 'drop' ? { t, defense: NO_DEFENSE, gassed: k && t - stepStart < REST_STEP_MS - 1500 } : { t, defense: k ? GUARD : NO_DEFENSE };
     } else if (step) {
       const on = t - stepStart > 300 && t - stepStart < 1500;
       st = { t, defense: { ...NO_DEFENSE, duck: on && step.kind === 'duck', slip: on && step.kind === 'slipLeft' ? 'left' : on && step.kind === 'slipRight' ? 'right' : 'none' } };
@@ -80,11 +80,15 @@ describe('guided calibration', () => {
   });
 
   it('learns every punch it prompted, with all of its reps', () => {
-    expect(profile.version).toBe(4);
-    expect(profile.learned).toHaveLength(8);
+    expect(profile.version).toBe(5);
+    expect(profile.learned).toEqual([
+      'jab-body', 'cross-body', 'leftHook-body', 'rightHook-body', 'leftUppercut-body', 'rightUppercut-body', 'jab-head', 'cross-head',
+    ]);
     expect(profile.samples.filter((s) => s.label !== 'none').length).toBeGreaterThanOrEqual(8 * CONFIG.model.repsPerMove);
-    expect(profile.bodySplit.left).toBeGreaterThan(-2);
-    expect(profile.bodySplit.right).toBeGreaterThan(-2);
+    for (const hand of ['left', 'right'] as const) {
+      expect(profile.headLine[hand]).toBeGreaterThanOrEqual(CONFIG.punch.headLineMin);
+      expect(profile.headLine[hand]).toBeLessThanOrEqual(CONFIG.punch.headLineMax);
+    }
   });
 
   it('verifies every move with the player\'s own model', () => {
@@ -101,13 +105,14 @@ describe('guided calibration', () => {
   it('the trained model classifies fresh punches correctly', () => {
     const model = modelFrom(profile)!;
     expect(model).toBeInstanceOf(KnnModel);
+    // Every taught move: all six to the body, jab and cross to the head.
     const cases: [PunchType, Target][] = [
-      ['jab', 'head'], ['cross', 'head'], ['leftHook', 'head'], ['rightHook', 'head'],
-      ['leftUppercut', 'head'], ['rightUppercut', 'head'], ['jab', 'body'], ['cross', 'body'],
+      ['jab', 'body'], ['cross', 'body'], ['leftHook', 'body'], ['rightHook', 'body'], ['leftUppercut', 'body'], ['rightUppercut', 'body'],
+      ['jab', 'head'], ['cross', 'head'],
     ];
     for (const [type, target] of cases) {
       const c = new Classifier(cal);
-      c.model = (s) => model.decide(s, 'orthodox', profile.bodySplit);
+      c.model = (s) => model.decide(s, 'orthodox', profile.headLine);
       const got: Punch[] = [];
       for (let k = 0; k < 900; k += DT) {
         got.push(...c.update(synthFrame({ t: k, defense: NO_DEFENSE, punch: { type, hand: handFor(type, 'orthodox'), target, startT: 100, windupMs: 80 } })).punches);
@@ -123,6 +128,23 @@ describe('guided calibration', () => {
     const hook = r.profile.scores.find((s) => s.prompt === 'Left hook')!;
     expect(hook.tries).toBeGreaterThan(hook.ok);
     expect(hook.ok).toBeGreaterThanOrEqual(CONFIG.model.verifyPasses);
+  });
+
+  it('says when a head shot was read as a body shot', () => {
+    const r = teach({ prompt: 'Jab to the head', throw: 'jab', target: 'body' });
+    expect(r.done).toBe(true);
+    expect(r.results).toContain('Read as body. Bring your fist up to eye level');
+    const jab = r.profile.scores.find((s) => s.prompt === 'Jab to the head')!;
+    expect(jab.wrongTarget).toBe(1);
+    expect(jab.ok).toBeGreaterThanOrEqual(CONFIG.model.verifyPasses);
+  });
+
+  it('steps aim at the chest by default and only the head steps go high', () => {
+    const r = teach();
+    const steps = new Teacher('orthodox').steps.filter((s) => s.kind === 'punch');
+    expect(steps.filter((s) => s.target === 'head').map((s) => s.prompt)).toEqual(['Jab to the head', 'Cross to the head']);
+    for (const s of steps) expect(s.how).toContain(s.target === 'head' ? 'eye level' : 'chest');
+    expect(r.done).toBe(true);
   });
 });
 

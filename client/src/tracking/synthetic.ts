@@ -99,7 +99,8 @@ function armPose(hand: Hand, st: SynthState): ArmPose {
     pole = [s, 1, 0];
   } else if (kind === 'hook') {
     wind = add(rest, [s * 0.12, 0.04, 0.05]);
-    const dy = body ? 0.2 : 0;
+    // A head hook ends a little above the nose on screen, so it clears the head line.
+    const dy = body ? 0.2 : -0.05;
     const ctrl: V = [s * 0.42, -0.5 + dy, -0.34];
     const end: V = [-s * 0.1, -0.52 + dy, -0.3];
     path = (u) => bez(wind, ctrl, end, easeOut(u));

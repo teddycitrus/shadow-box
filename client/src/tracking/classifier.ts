@@ -1,7 +1,8 @@
-import type { DefenseState, Hand, Punch, PunchType, Stance, Target } from '../../../shared/types.ts';
+import type { DefenseState, Hand, Punch, PunchType, Stance } from '../../../shared/types.ts';
 import { CONFIG } from '../config.ts';
 import type { Calibration } from './calibration.ts';
 import { HAND_IDX, L, angle3, dist2, dist3, mid, type Lm, type PoseFrame } from './frame.ts';
+import { kindOf, targetOf } from './model.ts';
 
 export interface HandFeatures {
   /** Shoulder-to-wrist 3D distance over calibrated arm length. */
@@ -480,7 +481,6 @@ export function ruleDecision(seg: Segment, stance: Stance): Punch | null {
   const u = CONFIG.uppercut;
   const h = CONFIG.hook;
   const s = CONFIG.straight;
-  const target: Target = seg.peakY < CONFIG.punch.headBodySplit ? 'head' : 'body';
   let type: PunchType | null = null;
   if (seg.rise > u.minRise && seg.elbow < u.maxElbow && seg.maxUp > u.minUpSpeed && seg.rise > Math.abs(seg.dIn)) {
     type = hand === 'left' ? 'leftUppercut' : 'rightUppercut';
@@ -490,7 +490,7 @@ export function ruleDecision(seg: Segment, stance: Stance): Punch | null {
     const lead: Hand = stance === 'orthodox' ? 'left' : 'right';
     type = hand === lead ? 'jab' : 'cross';
   }
-  return type ? { type, hand, target } : null;
+  return type ? { type, hand, target: targetOf(seg, kindOf(type)) } : null;
 }
 
 /**
