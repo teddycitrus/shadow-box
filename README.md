@@ -1,76 +1,122 @@
-# Keyboard Warrior
+<a id="readme-top"></a>
 
-A browser boxing game you play with your body. A webcam and MediaPipe pose tracking turn your punches, guard, ducks and slips into moves in a Three.js arena, for 1v1 matches over WebSocket with spectators, or practice against a bot.
+<!-- PROJECT SHIELDS -->
+<div align="center">
 
-## Features
+[![Contributors][contributors-shield]][contributors-url]
+[![Forks][forks-shield]][forks-url]
+[![Stargazers][stars-shield]][stars-url]
+[![Issues][issues-shield]][issues-url]
+[![MIT License][license-shield]][license-url]
 
-- Webcam control with MediaPipe Pose Landmarker running locally in the browser (model and WASM served by the game, no CDN).
-- Six punches (jab, cross, left/right hook, left/right uppercut). A punch thrown standing is a head shot; crouch (dip your head like a duck) as you punch for a body shot.
-- Four defenses: high guard, duck, slip left, slip right.
-- Stamina, knockdowns with a 10 count, get-ups by holding your guard, KO, TKO and decisions.
-- Online 1v1 rooms with 4-letter codes, an authoritative server, clock-synced punch timing and rejoin after a disconnect.
-- Spectator view with an orbiting camera at `/watch/CODE`.
-- Practice mode against a bot that runs the same match rules in the browser.
-- Keyboard mode (`?keys=1`) for playing and testing without a camera.
-- Synthesized sound effects and crowd, browser speech for the announcer, with optional mp3 overrides.
+</div>
 
-## How to play
+<!-- PROJECT LOGO -->
+<br />
+<div align="center">
+  <h3 align="center">Keyboard Warrior</h3>
+  <p align="center">
+    A browser boxing game you play with your body, through your webcam
+    <br />
+    <a href="https://keyboard-warrior.johnmannul.workers.dev"><strong>Play it live &raquo;</strong></a>
+    <br />
+    <a href="https://github.com/teddycitrus/shadow-box"><strong>Explore the docs &raquo;</strong></a>
+    <br />
+    <br />
+    <a href="https://github.com/teddycitrus/shadow-box/issues/new?labels=bug">Report Bug</a>
+    &middot;
+    <a href="https://github.com/teddycitrus/shadow-box/issues/new?labels=enhancement">Request Feature</a>
+  </p>
+</div>
 
-### Setup
+<!-- TABLE OF CONTENTS -->
+<details>
+  <summary>Table of Contents</summary>
+  <ol>
+    <li>
+      <a href="#about-the-project">About The Project</a>
+      <ul>
+        <li><a href="#built-with">Built With</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#architecture">Architecture</a>
+      <ul>
+        <li><a href="#move-classification">Move Classification</a></li>
+        <li><a href="#accuracy">Accuracy</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#getting-started">Getting Started</a>
+      <ul>
+        <li><a href="#prerequisites">Prerequisites</a></li>
+        <li><a href="#installation">Installation</a></li>
+        <li><a href="#production-build">Production Build</a></li>
+        <li><a href="#play-over-the-internet">Play Over The Internet</a></li>
+        <li><a href="#deploy-to-cloudflare">Deploy To Cloudflare</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#usage">Usage</a>
+      <ul>
+        <li><a href="#setup">Setup</a></li>
+        <li><a href="#calibration">Calibration</a></li>
+        <li><a href="#moves">Moves</a></li>
+        <li><a href="#rules">Rules</a></li>
+        <li><a href="#urls">URLs</a></li>
+        <li><a href="#flags">Flags</a></li>
+        <li><a href="#keyboard-mode">Keyboard Mode</a></li>
+      </ul>
+    </li>
+    <li><a href="#audio">Audio</a></li>
+    <li>
+      <a href="#development">Development</a>
+      <ul>
+        <li><a href="#checks">Checks</a></li>
+        <li><a href="#tuning">Tuning</a></li>
+        <li><a href="#project-layout">Project Layout</a></li>
+      </ul>
+    </li>
+    <li><a href="#contributing">Contributing</a></li>
+    <li><a href="#license">License</a></li>
+    <li><a href="#contact">Contact</a></li>
+  </ol>
+</details>
 
-1. Put the laptop at chest height and stand 1.5 to 2 m away.
-2. Use good light in front of you, not behind you.
-3. Keep your head, shoulders, elbows and hands in frame. The lobby tells you to move closer, step back or raise the camera.
+<!-- ABOUT THE PROJECT -->
+## About The Project
 
-### Calibration
+Keyboard Warrior is a browser boxing game you play with your body. A webcam and MediaPipe pose tracking turn your punches, guard, ducks and slips into moves in a Three.js arena, for 1v1 matches over WebSocket with spectators, or practice against a bot.
 
-1. Pick Orthodox or Southpaw first. Teaching uses your stance to know which hand throws the jab.
-2. Hold your guard (both gloves up by your face) steady for 2 seconds. The game measures your shoulder width, arm length, hand size and guard position and scales every threshold to your body.
-3. Teach your punches, about three minutes. An overlay on the webcam walks through:
-   - **Rest**, 6 s each: guard up and moving without punching, then dropping your hands and bringing them back. These motions are learned as non-punches.
-   - **Duck, slip left, slip right**, 3.5 s each. The duck comes first so your crouch depth is known before the punches.
-   - **8 punches** in turn: jab, cross, left hook, right hook, left uppercut, right uppercut, aimed at the face standing tall (head shots), then crouch and jab, crouch and cross (dip your head like a duck, then punch: body shots). Throw each one 5 times, back to guard after each (a step moves on after 5 reps or 15 s). Wind-ups and fidgets around each rep are learned as non-punches, and a rep far from the rest of its move is dropped. The crouch reps set how far your head has to dip for a body shot (see Moves).
-   - **Fast**: right after each standing punch, the same punch 3 times as fast and sharp as you can. A fast punch crosses the screen in two or three camera frames and looks different from a slow one, so the model learns both.
-   - **Combo**: jab, cross, hook, fast, one punch right after the other, 3 times. Each punch of a combo is taught as its own rep, so punches thrown back to back are recognized too.
-   - **Check**: random punches from the list are prompted and read back live with your new model. A wrong or missed read is taught on the spot with the right label (a punch read as no punch also drops the two non-punch examples nearest to it that outvoted it, such as an uppercut wind-up that looks like a body jab), and the move comes back until it is read right twice (at most 4 tries). The right punch at the wrong target is called out ("Read as body. Stand tall for a head shot" or "Read as head. Crouch lower for a body shot") and counted per move. The overlay ends with how often each move was read right; the lobby lists any move that stayed unreliable.
+Key capabilities:
 
-   Punches do not reach the match during this step.
-4. Press Ready.
+* **Webcam control**: MediaPipe Pose Landmarker runs locally in the browser (model and WASM served by the game, no CDN).
+* **Six punches**: jab, cross, left/right hook, left/right uppercut. A punch thrown standing is a head shot; crouch (dip your head like a duck) as you punch for a body shot.
+* **Four defenses**: high guard, duck, slip left, slip right.
+* **Full fight rules**: stamina, knockdowns with a 10 count, get-ups by holding your guard, KO, TKO and decisions.
+* **Online 1v1 rooms**: 4-letter codes, an authoritative server, clock-synced punch timing and rejoin after a disconnect.
+* **Spectator view**: an orbiting camera at `/watch/CODE`.
+* **Practice mode**: a bot that runs the same match rules in the browser.
+* **Keyboard mode**: `?keys=1` for playing and testing without a camera.
+* **Sound**: synthesized sound effects and crowd, browser speech for the announcer, with optional mp3 overrides.
 
-The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v7`; profiles from before the fast steps are not reused) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-### Moves
+### Built With
 
-| Move | How |
-| --- | --- |
-| Jab | Punch straight at the camera with your lead hand (left for orthodox, right for southpaw). |
-| Cross | Punch straight at the camera with your rear hand. |
-| Left / right hook | Elbow bent, hand around shoulder height, swing across. |
-| Left / right uppercut | Start below your chin and drive the fist up. |
-| Head or body | Head by default. Crouch as you punch (dip your head like a duck) for a body shot; this works for every punch, hooks and uppercuts too. A punch is a body shot when your head dipped at least your body dip below its neutral position, in shoulder widths (sw), between the start of the motion and just past its peak. The default is 0.4 sw; teaching sets it 45% of the way from how far your head moves on standing punches to how deep you crouched on the crouch reps (or your duck, with fewer than two crouch reps), kept between 0.3 and 0.8 sw. The head drop reads the same from any camera height, unlike the fist height. A crouched punch may also count as a duck while you are down. |
-| High guard | Both gloves up by your face. |
-| Duck | Drop your head well down. |
-| Slip left / right | Move your head to the side. |
+| layer | tools |
+|---|---|
+| language | ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) |
+| tracking | ![MediaPipe](https://img.shields.io/badge/MediaPipe-0097A7?style=flat-square&logo=google&logoColor=white) |
+| rendering | ![Three.js](https://img.shields.io/badge/Three.js-000000?style=flat-square&logo=threedotjs&logoColor=white) |
+| client build | ![Vite](https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white) |
+| server | ![Node.js](https://img.shields.io/badge/Node.js_24-339933?style=flat-square&logo=nodedotjs&logoColor=white) ![ws](https://img.shields.io/badge/ws-1f2937?style=flat-square) |
+| hosting | ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white) |
+| tests | ![Vitest](https://img.shields.io/badge/Vitest-6E9F18?style=flat-square&logo=vitest&logoColor=white) |
 
-A punch fires once, as soon as the hand turns back from its furthest point (one frame after the peak, not at the end of the retraction). That hand is then free again once it comes back toward where it started, settles somewhere new, or turns round on the way back and drives out again (a double jab or a combo, without going all the way home). Punches from one hand are at least 250 ms apart (450 ms when gassed).
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-### Rules
-
-All numbers come from `shared/rules.ts`.
-
-- **Format:** 3 rounds of 60 s, 8 s breaks, 3 s countdown. Each fighter has 100 HP. The round clock stops while someone is down.
-- **Damage:** jab 4, cross 7, hook 9, uppercut 11. Head shots deal x1.5.
-- **Guard** blocks any punch but still takes 15% of its damage off HP, and each block costs the defender 4 stamina plus 0.8 per point of the punch's damage. Stamina recovers more slowly while you hold guard (see Stamina).
-- **Duck** dodges head shots.
-- **Slip** dodges straights (jab and cross) when you slip away from the side the punch lands on. An attacker's right hand lands on your left, so slip right to dodge it, and vice versa.
-- **Stagger:** a clean head shot other than a jab that deals 12 or more staggers the defender.
-- **Stamina:** 100 max. Punches cost jab 6, cross 10, hook 12, uppercut 14. Recovery starts 600 ms after your last punch at 15 per second, or 10 per second while you hold guard. (A camera player's hands rest at guard between punches; guard used to drain stamina instead, which left camera players exhausted for good.) Below 30 you are gassed: your punches deal x0.6 and your cooldown is longer. At 0 you are exhausted and cannot punch until you recover to 20.
-- **Knockdown:** at 0 HP you go down and the referee counts one per second. Hold a steady guard to get up: 2 s after the first knockdown, 3.5 s after later ones. You come back with 30 HP (20 HP after the second knockdown) and 50 stamina, and are protected for 1.5 s after the 1.2 s get-up.
-- **KO:** still down at the 10 count.
-- **TKO:** the third knockdown ends the fight.
-- **Decision:** after 3 rounds, more HP wins, then fewer knockdowns, otherwise a draw.
-- **Forfeit:** a player who disconnects mid-match has 60 s to rejoin before losing.
-
+<!-- ARCHITECTURE -->
 ## Architecture
 
 The server owns the match. Clients track the pose, classify moves locally, and send only small messages: a downsampled pose for rendering, punch events with a server-time peak timestamp, and defense changes. The server resolves every punch against the defender's defense history and broadcasts events and state to both players and all spectators. Practice mode and the title screen demo run the same `Match` class from `shared/` in the browser.
@@ -189,7 +235,7 @@ Hard limits:
 - Rooms with nobody connected are dropped after 10 minutes without activity. On Cloudflare a room lives only in its Durable Object's memory, which stops ticking when the last socket closes and can be evicted soon after.
 - On Cloudflare, `/ws?create=1` picks a random code in the Worker and retries up to 8 times if that room is in use.
 
-### Move classification
+### Move Classification
 
 `client/src/tracking/classifier.ts` turns each tracked frame into punch events and a defense state. Thresholds live in `client/src/config.ts`; distances are in calibrated shoulder widths (sw).
 
@@ -227,7 +273,7 @@ Punch pipeline, per hand:
 1. **Track:** each hand is followed on screen in its own frame: origin between the shoulders, x toward the body midline (mirrored for the left hand so both hands share one frame), y up, in sw. While the hand is slower than 1.5 sw/s its rest position follows it.
 2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. Once the hand turns back (one frame past the furthest point and heading home, or nearly stopped), the motion so far is read right away and fires if it is a punch. Otherwise it is followed on and read again when it ends: back to 80% of that distance, stalled for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts), or has settled for 350 ms (100 ms after a motion that did not fire), so a retraction never becomes a motion of its own. A hand on its way back is also free when it turns round (nearly stops, or leaves at a right angle or more to how it came in) and moves 0.35 sw away from that point at punch speed; after a fired punch it must have come back past 80% of the punch first. That new motion is measured from the turning point, and its travel for the gate from where the hand rested before, so a double jab thrown from a half retraction still counts. A hand fires at most once per 250 ms (450 ms gassed).
 3. **Gate:** the motion must travel at least 0.55 sw and reach 4 sw/s (speeds measured over frame gaps longer than 50 ms are scaled up, by at most 1/0.75, since they average over more of the punch). A mostly vertical motion while the other hand moves the same way by at least 60% as much (raising or dropping the guard) is not a punch. This applies whichever classifier is active.
-4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the head dip against the player's body dip gives the target (see Moves). When the population prior is available its samples join the player's own at 1.3 times their distance. Without a profile the hand-written rules decide, with the default body dip of 0.4 sw.
+4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the head dip against the player's body dip gives the target (see [Moves](#moves)). When the population prior is available its samples join the player's own at 1.3 times their distance. Without a profile the hand-written rules decide, with the default body dip of 0.4 sw.
 5. **Fire:** the punch is sent with the peak time, on the frame after the peak in most cases.
 
 Defense, every frame:
@@ -235,6 +281,8 @@ Defense, every frame:
 - **Neutral:** the head offset is measured from a neutral nose position that starts at the calibrated one and follows slow drift (3 s time constant) while the head is within half a duck or slip threshold, so stepping around does not read as a slip.
 - **Duck and slip** fire when the offset passes 0.55 sw down or 0.5 sw sideways. The teach step personalizes each to half of the deepest duck or slip you showed, if it reached at least 60% of the default, and never below half the default. Slips are ignored during a hand motion and for 300 ms after, since punching moves the head. Ducks are not, and never block a punch: a crouched body shot fires as a punch and can read as a duck at the same time.
 - **Guard** needs both hands out of a motion, slow and up by the face. The height and head-distance limits are the defaults or, if looser, your calibrated guard position plus 0.3 sw, with 0.2 sw of hysteresis once held.
+
+### Accuracy
 
 Accuracy is measured against hand-checked rep times (`scripts/eval-gt.ts`) on the 12 recorded clips in `tests/fixtures/` (one orthodox player, 39 reps) and on a real teach session (22 reps), replaying the live classifier frame by frame (`scripts/eval-calibration.ts`). Trained on 4 of 5 reps per move, 90% of fixture punches come out exactly right (type and head/body) with 1 extra fire, and the 4 defense clips fire nothing; trained on the first 3 reps, 93% (2 reps, 78%). On the teach session, where most moves only got two real reps and the camera sat high, 77% of types are right. Every recorded rep was thrown standing (including the ones aimed low before the crouch rule), so each is scored as a head shot. Head or body alone (`scripts/eval-target.ts`, `tests/target.test.ts`): all 35 fixture reps and all 21 teach-session reps read as head, with the default body dip and with the 0.55 sw the duck clip would set (the deepest head dip on any of them is 0.28 sw, a low jab). The recorded duck clip fires at most one punch. There is no recorded crouch-punch data yet; body shots are tested with synthetic poses that crouch through the punch. Punches fire a median 67 ms (p90 124 ms) after the hand-checked peak on the fixtures and 48 ms (p90 113 ms) on the teach session, recorded at about 25 fps. The segmenter finds 37 of 39 fixture reps at full frame rate, at half and at a third (`scripts/eval-speed.ts`); trained at full rate, 32 of 37 and 30 of 37 of those are read right. Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
 
@@ -250,22 +298,45 @@ Fast punches are measured by replaying the fixture clips sped up (`scripts/eval-
 
 No replay fires anything in the sped-up defense clips with the fast pass, and none fires away from the reps. The main fix was the return logic: a hand that never paused at guard for 350 ms after a motion stayed locked, so quick punches after the first were lost; the fast pass fixes most of the rest, where the model read a two-frame punch as no punch.
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- GETTING STARTED -->
 ## Getting Started
 
-Requires Node.js 24. `npm run tunnel` also needs [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) on your PATH.
+### Prerequisites
 
-```sh
-npm install
-npm run dev
-```
+* Node.js 24
+* [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) on your PATH, only for `npm run tunnel`
 
-`npm run dev` copies the MediaPipe WASM into `client/public/mediapipe/wasm`, starts the game server on :3000 (with `tsx watch`) and opens Vite on http://localhost:5173, which proxies `/ws` to the server. Camera access works on `localhost` without HTTPS.
+### Installation
 
-Production build, everything served by the Node server on :3000:
+1. Clone the repo
+   ```sh
+   git clone https://github.com/teddycitrus/shadow-box.git
+   cd shadow-box
+   ```
+
+2. Install dependencies
+   ```sh
+   npm install
+   ```
+
+3. Start the dev servers
+   ```sh
+   npm run dev
+   ```
+
+   `npm run dev` copies the MediaPipe WASM into `client/public/mediapipe/wasm`, starts the game server on :3000 (with `tsx watch`) and opens Vite on http://localhost:5173, which proxies `/ws` to the server. Camera access works on `localhost` without HTTPS.
+
+### Production Build
+
+Everything served by the Node server on :3000:
 
 ```sh
 npm run build && npm start
 ```
+
+### Play Over The Internet
 
 To play with someone on another machine, run the production build and then:
 
@@ -275,7 +346,7 @@ npm run tunnel
 
 This starts a cloudflared quick tunnel to http://localhost:3000 and prints a public HTTPS URL. Browsers only allow the camera over HTTPS (or on localhost), so share that URL rather than a LAN address.
 
-### Deploy (serverless, free)
+### Deploy To Cloudflare
 
 The game can run on Cloudflare's free Workers plan with no server of your own. Log in once, then deploy:
 
@@ -286,32 +357,67 @@ npm run deploy
 
 `npm run deploy` builds the client, writes `dist/client/audio-manifest.json` and runs `wrangler deploy`, which prints a `https://keyboard-warrior.<your-subdomain>.workers.dev` URL. `npm run cf:dev` runs the same Worker and Durable Objects locally on http://localhost:8787 without a login.
 
-
 Free plan limits, reset daily at 00:00 UTC: 100,000 Worker requests and 100,000 Durable Object requests (each socket connect is one; incoming WebSocket messages count 20 to 1), and 13,000 GB-s of Durable Object duration, which is about 29 hours of open rooms. Static asset requests are free. Over a limit, new requests fail until the reset. The Node server with `npm run tunnel` remains an option.
 
-Checks:
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-```sh
-npm test          # Vitest: classifier, teach step, recorded fixtures, hit resolution, match rules, rooms
-npm run typecheck # tsc for the client, server and shared code, then for worker/ with Workers types
-```
+<!-- USAGE -->
+## Usage
 
-### Tuning
+### Setup
 
-These scripts replay the recorded clips in `tests/fixtures/` through the classifier. Recording clips is covered in [FIXTURES.md](FIXTURES.md).
+1. Put the laptop at chest height and stand 1.5 to 2 m away.
+2. Use good light in front of you, not behind you.
+3. Keep your head, shoulders, elbows and hands in frame. The lobby tells you to move closer, step back or raise the camera.
 
-```sh
-npx tsx scripts/eval-calibration.ts        # end to end: replayed calibrations scored against hand-checked reps
-npx tsx scripts/eval-model.ts --verbose    # k-NN leave-one-out per motion, fixtures and teach session
-npx tsx scripts/eval-target.ts             # head or body per rep, the live rule against the alternatives
-npx tsx scripts/eval-speed.ts              # reps caught and read with frames dropped
-npx tsx scripts/eval-fast.ts               # fast punches and doubles: clips sped up, with lag and wrist blur
-npx tsx scripts/dump-fast.ts jab-head 2 whole  # every motion decision in one sped-up clip
-npx tsx scripts/eval-session.ts            # train on a teach session, replay a play session
-npx tsx scripts/eval-defense.ts            # guard, duck and slip onsets per clip
-npx tsx scripts/dump-segments.ts jab-head  # every motion segment's features in matching clips
-npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense change, --trace for per-frame features
-```
+### Calibration
+
+1. Pick Orthodox or Southpaw first. Teaching uses your stance to know which hand throws the jab.
+2. Hold your guard (both gloves up by your face) steady for 2 seconds. The game measures your shoulder width, arm length, hand size and guard position and scales every threshold to your body.
+3. Teach your punches, about three minutes. An overlay on the webcam walks through:
+   - **Rest**, 6 s each: guard up and moving without punching, then dropping your hands and bringing them back. These motions are learned as non-punches.
+   - **Duck, slip left, slip right**, 3.5 s each. The duck comes first so your crouch depth is known before the punches.
+   - **8 punches** in turn: jab, cross, left hook, right hook, left uppercut, right uppercut, aimed at the face standing tall (head shots), then crouch and jab, crouch and cross (dip your head like a duck, then punch: body shots). Throw each one 5 times, back to guard after each (a step moves on after 5 reps or 15 s). Wind-ups and fidgets around each rep are learned as non-punches, and a rep far from the rest of its move is dropped. The crouch reps set how far your head has to dip for a body shot (see [Moves](#moves)).
+   - **Fast**: right after each standing punch, the same punch 3 times as fast and sharp as you can. A fast punch crosses the screen in two or three camera frames and looks different from a slow one, so the model learns both.
+   - **Combo**: jab, cross, hook, fast, one punch right after the other, 3 times. Each punch of a combo is taught as its own rep, so punches thrown back to back are recognized too.
+   - **Check**: random punches from the list are prompted and read back live with your new model. A wrong or missed read is taught on the spot with the right label (a punch read as no punch also drops the two non-punch examples nearest to it that outvoted it, such as an uppercut wind-up that looks like a body jab), and the move comes back until it is read right twice (at most 4 tries). The right punch at the wrong target is called out ("Read as body. Stand tall for a head shot" or "Read as head. Crouch lower for a body shot") and counted per move. The overlay ends with how often each move was read right; the lobby lists any move that stayed unreliable.
+
+   Punches do not reach the match during this step.
+4. Press Ready.
+
+The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v7`; profiles from before the fast steps are not reused) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
+
+### Moves
+
+| Move | How |
+| --- | --- |
+| Jab | Punch straight at the camera with your lead hand (left for orthodox, right for southpaw). |
+| Cross | Punch straight at the camera with your rear hand. |
+| Left / right hook | Elbow bent, hand around shoulder height, swing across. |
+| Left / right uppercut | Start below your chin and drive the fist up. |
+| Head or body | Head by default. Crouch as you punch (dip your head like a duck) for a body shot; this works for every punch, hooks and uppercuts too. A punch is a body shot when your head dipped at least your body dip below its neutral position, in shoulder widths (sw), between the start of the motion and just past its peak. The default is 0.4 sw; teaching sets it 45% of the way from how far your head moves on standing punches to how deep you crouched on the crouch reps (or your duck, with fewer than two crouch reps), kept between 0.3 and 0.8 sw. The head drop reads the same from any camera height, unlike the fist height. A crouched punch may also count as a duck while you are down. |
+| High guard | Both gloves up by your face. |
+| Duck | Drop your head well down. |
+| Slip left / right | Move your head to the side. |
+
+A punch fires once, as soon as the hand turns back from its furthest point (one frame after the peak, not at the end of the retraction). That hand is then free again once it comes back toward where it started, settles somewhere new, or turns round on the way back and drives out again (a double jab or a combo, without going all the way home). Punches from one hand are at least 250 ms apart (450 ms when gassed).
+
+### Rules
+
+All numbers come from `shared/rules.ts`.
+
+- **Format:** 3 rounds of 60 s, 8 s breaks, 3 s countdown. Each fighter has 100 HP. The round clock stops while someone is down.
+- **Damage:** jab 4, cross 7, hook 9, uppercut 11. Head shots deal x1.5.
+- **Guard** blocks any punch but still takes 15% of its damage off HP, and each block costs the defender 4 stamina plus 0.8 per point of the punch's damage. Stamina recovers more slowly while you hold guard (see Stamina).
+- **Duck** dodges head shots.
+- **Slip** dodges straights (jab and cross) when you slip away from the side the punch lands on. An attacker's right hand lands on your left, so slip right to dodge it, and vice versa.
+- **Stagger:** a clean head shot other than a jab that deals 12 or more staggers the defender.
+- **Stamina:** 100 max. Punches cost jab 6, cross 10, hook 12, uppercut 14. Recovery starts 600 ms after your last punch at 15 per second, or 10 per second while you hold guard. (A camera player's hands rest at guard between punches; guard used to drain stamina instead, which left camera players exhausted for good.) Below 30 you are gassed: your punches deal x0.6 and your cooldown is longer. At 0 you are exhausted and cannot punch until you recover to 20.
+- **Knockdown:** at 0 HP you go down and the referee counts one per second. Hold a steady guard to get up: 2 s after the first knockdown, 3.5 s after later ones. You come back with 30 HP (20 HP after the second knockdown) and 50 stamina, and are protected for 1.5 s after the 1.2 s get-up.
+- **KO:** still down at the 10 count.
+- **TKO:** the third knockdown ends the fight.
+- **Decision:** after 3 rounds, more HP wins, then fewer knockdowns, otherwise a draw.
+- **Forfeit:** a player who disconnects mid-match has 60 s to rejoin before losing.
 
 ### URLs
 
@@ -333,7 +439,7 @@ npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense cha
 | `?model=lite` / `?model=full` | Pins the pose model. By default tracking starts on full and tries lite once, for 2 s, full has tracked under 28 fps or missed more than 15% of the camera's frames because detection is the bottleneck (camera frames skipped or detection slower than the camera). Lite is kept only if it then tracks at least 1.2 times as many frames per second; otherwise full comes back for good. |
 | `?record=1` | Shows a guided recorder that saves labelled clips of every move into `tests/fixtures/`. See [FIXTURES.md](FIXTURES.md). |
 
-Keyboard mode keys:
+### Keyboard Mode
 
 | Key | Action |
 | --- | --- |
@@ -346,6 +452,9 @@ Keyboard mode keys:
 | S (hold) | Duck |
 | A / D (hold) | Slip left / right |
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- AUDIO -->
 ## Audio
 
 Every sound is synthesized at runtime with the Web Audio API, and the announcer uses the browser's speech synthesis, so no audio files are required.
@@ -376,7 +485,36 @@ Percussive sounds play with a random +-6% playback rate and slight level jitter 
 
 Optionally, `npm run gen:audio` generates all of these with the ElevenLabs API. Put `ELEVENLABS_API_KEY=...` in `.env` at the repo root (see `.env.example`); `ELEVENLABS_VOICE_ID` picks the announcer voice. Existing files are skipped unless you pass `--force`, and `--only=bell,announcer_ko` limits the run. With `ffmpeg` on PATH, effects are trimmed of leading silence and peak-normalized to -1 dBFS after download (`--polish` reruns that on existing files); `FILE_GAIN` in `sound.ts` sets the mix. This is never needed to play.
 
-## Project layout
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- DEVELOPMENT -->
+## Development
+
+### Checks
+
+```sh
+npm test          # Vitest: classifier, teach step, recorded fixtures, hit resolution, match rules, rooms
+npm run typecheck # tsc for the client, server and shared code, then for worker/ with Workers types
+```
+
+### Tuning
+
+These scripts replay the recorded clips in `tests/fixtures/` through the classifier. Recording clips is covered in [FIXTURES.md](FIXTURES.md).
+
+```sh
+npx tsx scripts/eval-calibration.ts        # end to end: replayed calibrations scored against hand-checked reps
+npx tsx scripts/eval-model.ts --verbose    # k-NN leave-one-out per motion, fixtures and teach session
+npx tsx scripts/eval-target.ts             # head or body per rep, the live rule against the alternatives
+npx tsx scripts/eval-speed.ts              # reps caught and read with frames dropped
+npx tsx scripts/eval-fast.ts               # fast punches and doubles: clips sped up, with lag and wrist blur
+npx tsx scripts/dump-fast.ts jab-head 2 whole  # every motion decision in one sped-up clip
+npx tsx scripts/eval-session.ts            # train on a teach session, replay a play session
+npx tsx scripts/eval-defense.ts            # guard, duck and slip onsets per clip
+npx tsx scripts/dump-segments.ts jab-head  # every motion segment's features in matching clips
+npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense change, --trace for per-frame features
+```
+
+### Project Layout
 
 ```
 client/
@@ -400,7 +538,7 @@ server/
   index.ts            HTTP static server, WebSocket /ws, room registry
   room.ts             one room: players, spectators, authoritative Match
   session.ts          per-socket message handling shared with the Worker
-  data-store.ts       /api calibration upload, prior and export, shared with the Worker
+  data-store.ts       /api population prior store, shared with the Worker
 worker/
   index.ts            Cloudflare Worker, the RoomDO and DataDO Durable Objects
 wrangler.jsonc        Cloudflare config: assets, Durable Object bindings, migrations
@@ -423,6 +561,47 @@ tests/                Vitest suites, plus recorded fixtures in tests/fixtures/
 vite.config.ts        Vite config, with a dev-only endpoint that saves recorder clips
 ```
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- CONTRIBUTING -->
+## Contributing
+
+Contributions are welcome. If you have a suggestion, fork the repo and open a pull request, or open an issue with the tag "enhancement". New recorded clips in `tests/fixtures/` (see [FIXTURES.md](FIXTURES.md)) are especially useful.
+
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- LICENSE -->
 ## License
 
-MIT, teddycitrus.
+Distributed under the MIT License. See `LICENSE` for more information.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- CONTACT -->
+## Contact
+
+teddycitrus
+
+Project Link: [https://github.com/teddycitrus/shadow-box](https://github.com/teddycitrus/shadow-box)
+
+Live: [https://keyboard-warrior.johnmannul.workers.dev](https://keyboard-warrior.johnmannul.workers.dev)
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- MARKDOWN LINKS & BADGES -->
+[contributors-shield]: https://img.shields.io/github/contributors/teddycitrus/shadow-box.svg?style=for-the-badge&cacheSeconds=60
+[contributors-url]: https://github.com/teddycitrus/shadow-box/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/teddycitrus/shadow-box.svg?style=for-the-badge&cacheSeconds=60
+[forks-url]: https://github.com/teddycitrus/shadow-box/network/members
+[stars-shield]: https://img.shields.io/github/stars/teddycitrus/shadow-box.svg?style=for-the-badge&cacheSeconds=60
+[stars-url]: https://github.com/teddycitrus/shadow-box/stargazers
+[issues-shield]: https://img.shields.io/github/issues/teddycitrus/shadow-box.svg?style=for-the-badge&cacheSeconds=60
+[issues-url]: https://github.com/teddycitrus/shadow-box/issues
+[license-shield]: https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge
+[license-url]: https://github.com/teddycitrus/shadow-box/blob/master/LICENSE
