@@ -3,6 +3,12 @@ import { W, type Punch, type WirePose } from '../../../shared/types.ts';
 import type { Corner } from './avatar.ts';
 import { outlineMaterial, toonGradient } from './fx.ts';
 
+const GUARD_POS = [new THREE.Vector3(0.11, -0.13, -0.52), new THREE.Vector3(-0.11, -0.13, -0.52)];
+const want = new THREE.Vector3();
+const off = new THREE.Vector3();
+const nose = new THREE.Vector3();
+const wrist = new THREE.Vector3();
+
 /** The player's own gloves in the foreground, following their wrists (mirrored). */
 export class FirstPersonGloves {
   readonly object = new THREE.Group();
@@ -23,12 +29,18 @@ export class FirstPersonGloves {
       const g = new THREE.Mesh(geo, this.mat);
       g.scale.set(0.07, 0.075, 0.09);
       g.position.copy(this.target[i]);
-      g.add(new THREE.Mesh(geo, line));
+      const gl = new THREE.Mesh(geo, line);
+      gl.matrixAutoUpdate = false;
+      g.add(gl);
       const cuff = new THREE.Mesh(cuffGeo, cuffMat);
       cuff.rotation.x = Math.PI / 2;
       cuff.position.z = 0.9;
       cuff.scale.set(1 / 0.07, 1 / 0.09, 1 / 0.075);
-      cuff.add(new THREE.Mesh(cuffGeo, line));
+      cuff.updateMatrix();
+      cuff.matrixAutoUpdate = false;
+      const cl = new THREE.Mesh(cuffGeo, line);
+      cl.matrixAutoUpdate = false;
+      cuff.add(cl);
       g.add(cuff);
       this.gloves.push(g);
       this.object.add(g);
@@ -57,10 +69,10 @@ export class FirstPersonGloves {
 
   /** Camera space: x right, y up, z toward the scene (negative). */
   setPose(p: WirePose, gassed: boolean): void {
-    const g = (i: number) => new THREE.Vector3(p.lm[i * 3] / 1000, p.lm[i * 3 + 1] / 1000, p.lm[i * 3 + 2] / 1000);
-    const nose = g(W.nose);
-    for (const [k, wi] of [[0, W.rWrist], [1, W.lWrist]] as const) {
-      const w = g(wi).sub(nose);
+    const g = (i: number, v: THREE.Vector3) => v.set(p.lm[i * 3] / 1000, p.lm[i * 3 + 1] / 1000, p.lm[i * 3 + 2] / 1000);
+    g(W.nose, nose);
+    for (let k = 0; k < 2; k++) {
+      const w = g(k === 0 ? W.rWrist : W.lWrist, wrist).sub(nose);
       const y = Math.max(-0.3, -w.y - 0.13 - (gassed ? 0.06 : 0));
       this.target[k].set(-w.x * 1.6 + (k === 0 ? 0.05 : -0.05), y, Math.min(-0.38, w.z * 1.8 - 0.45));
     }
@@ -69,22 +81,26 @@ export class FirstPersonGloves {
   update(dt: number): void {
     const k = 1 - Math.exp(-dt * 22);
     this.guardK += ((this.guard ? 1 : 0) - this.guardK) * Math.min(1, dt * 12);
-    this.gloves.forEach((g, i) => {
-      const want = this.target[i].clone().lerp(new THREE.Vector3(i === 0 ? 0.11 : -0.11, -0.13, -0.52), this.guardK * 0.8);
+    for (let i = 0; i < 2; i++) {
+      const g = this.gloves[i];
+      want.copy(this.target[i]).lerp(GUARD_POS[i], this.guardK * 0.8);
       const s = this.swing;
       if (s && s.k === i) {
         const u = Math.sin(Math.min(1, s.t / 0.3) * Math.PI);
         const sx = i === 0 ? 1 : -1;
         const body = s.punch.target === 'body' ? -0.14 : 0;
-        const off = s.punch.type === 'jab' || s.punch.type === 'cross' ? new THREE.Vector3(-sx * 0.08, 0.05 + body, -0.55)
-          : s.punch.type.endsWith('Hook') ? new THREE.Vector3(-sx * 0.3 * u + sx * 0.15, 0.08 + body, -0.4)
-            : new THREE.Vector3(-sx * 0.05, 0.25, -0.35);
+        if (s.punch.type === 'jab' || s.punch.type === 'cross') off.set(-sx * 0.08, 0.05 + body, -0.55);
+        else if (s.punch.type.endsWith('Hook')) off.set(-sx * 0.3 * u + sx * 0.15, 0.08 + body, -0.4);
+        else off.set(-sx * 0.05, 0.25, -0.35);
         want.addScaledVector(off, u);
       }
       g.position.lerp(want, s && s.k === i ? 0.6 : k);
-    });
+    }
     if (this.swing && (this.swing.t += dt) > 0.3) this.swing = null;
-    (this.ring.material as THREE.MeshBasicMaterial).opacity = this.guardK * 0.18;
+    const ringOpacity = this.guardK * 0.18;
+    (this.ring.material as THREE.MeshBasicMaterial).opacity = ringOpacity;
+    // Below this the additive ring adds far less than one 8-bit step, so skip its draw call.
+    this.ring.visible = ringOpacity > 1e-4;
   }
 }
 

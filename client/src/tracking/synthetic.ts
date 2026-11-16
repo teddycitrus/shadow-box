@@ -19,7 +19,7 @@ const CAM_DIST = 1.2;
 const FOCAL = 1.1;
 const CAM_Y = 0;
 const CENTRE_Y = 0.75;
-export const SYNTH_ASPECT = 16 / 9;
+const SYNTH_ASPECT = 16 / 9;
 
 export interface SynthPunch extends Punch {
   startT: number;
@@ -45,7 +45,7 @@ const easeOut = (k: number) => 1 - (1 - k) * (1 - k);
 const easeInOut = (k: number) => (k < 0.5 ? 2 * k * k : 1 - 2 * (1 - k) * (1 - k));
 
 /** Two-bone IK: elbow position for a shoulder and wrist, bending toward `pole`. */
-export function solveElbow(s: V, w: V, pole: V): V {
+function solveElbow(s: V, w: V, pole: V): V {
   let d = sub(w, s);
   let dl = len(d);
   const maxL = UPPER + FORE - 1e-3;
@@ -126,14 +126,14 @@ export interface SynthPose {
 }
 
 /** How deep a body punch crouches, as a fraction of a full duck. */
-export const BODY_CROUCH = 0.85;
+const BODY_CROUCH = 0.85;
 
 /**
  * 0 to 1 crouch at this moment: a full duck, or a body punch, which dips the head over the
  * wind-up and the first part of the extension, holds it to the peak, and comes back up on the
  * retraction.
  */
-export function crouchOf(st: SynthState): number {
+function crouchOf(st: SynthState): number {
   const duck = st.defense.duck ? 1 : 0;
   const p = st.punch;
   if (!p || p.target !== 'body') return duck;

@@ -175,6 +175,7 @@ export class Sound {
     const g = ctx.createGain();
     g.gain.value = gain;
     src.connect(g).connect(this.out!);
+    src.onended = () => g.disconnect();
     src.start(ctx.currentTime + delay);
   }
 
@@ -225,6 +226,7 @@ export class Sound {
     const m = { src, g };
     this.music = m;
     src.onended = () => {
+      g.disconnect();
       if (this.music === m) this.music = null;
     };
   }

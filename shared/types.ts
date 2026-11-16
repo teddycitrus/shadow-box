@@ -1,3 +1,5 @@
+import type { WireSnapshot } from './wire.ts';
+
 export type Slot = 0 | 1;
 export type Hand = 'left' | 'right';
 export type Side = 'left' | 'right';
@@ -97,7 +99,8 @@ export type ClientMsg =
   | { t: 'watch'; code: string }
   | { t: 'ping'; c: number }
   | { t: 'ready'; ready: boolean; calibrated: boolean; stance: Stance }
-  | { t: 'pose'; p: WirePose }
+  /** A pose as `k` (full, flattened; the first after each join) or `dp` (change from the last). `p` is the older plain form. */
+  | { t: 'pose'; p?: WirePose; k?: number[]; dp?: number[] }
   | { t: 'punch'; punch: Punch; at: number }
   | { t: 'defense'; def: DefenseState; at: number };
 
@@ -106,8 +109,13 @@ export type ServerMsg =
   | { t: 'error'; msg: string }
   | { t: 'pong'; c: number; s: number }
   | { t: 'lobby'; players: [LobbyPlayer | null, LobbyPlayer | null]; spectators: number }
-  | { t: 'pose'; slot: Slot; p: WirePose; def: DefenseState }
-  | { t: 'state'; s: MatchSnapshot; rejoinMs: number | null }
+  /**
+   * A relayed pose (shared/wire.ts): `k` is a full flattened pose (sent first and to anyone who
+   * joins), `dp` the change from the previous one for that slot. `d` is the packed defense.
+   */
+  | { t: 'pose'; slot: Slot; d: number; k?: number[]; dp?: number[] }
+  /** `s` is packed by encodeSnapshot (shared/wire.ts); `r` is the rejoin countdown in ms while paused. */
+  | { t: 'state'; s: WireSnapshot; r?: number }
   /** `at` is the server time of the event and `id` a sequence number, so every client can play the same audio cue at the same moment. */
   | { t: 'event'; ev: MatchEvent; at?: number; id?: number };
 

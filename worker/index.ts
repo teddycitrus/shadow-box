@@ -48,11 +48,13 @@ function toRoom(env: Env, req: Request, code: string, create: boolean): Promise<
   return env.ROOMS.get(env.ROOMS.idFromName(code)).fetch(req.url, { headers });
 }
 
-/** One room. Holds the Room in memory and ticks it at 60 Hz while any socket is connected. */
+/**
+ * One room. Holds the Room in memory and ticks it at 60 Hz only while a match is running (or
+ * paused, waiting on a rejoin), so a lobby or a finished match costs no CPU between messages.
+ */
 export class RoomDO extends DurableObject<Env> {
   private code = '';
   private room: Room | null = null;
-  private sockets = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now = () => Date.now();
 
@@ -68,6 +70,9 @@ export class RoomDO extends DurableObject<Env> {
       send: (m: ServerMsg) => {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
       },
+      sendRaw: (json: string) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(json);
+      },
     };
     const session = new Session(conn, {
       // Reuse a live room on a create race; otherwise start fresh so stale results do not leak.
@@ -80,11 +85,12 @@ export class RoomDO extends DurableObject<Env> {
       if (!open) return;
       open = false;
       session.close();
-      if (--this.sockets === 0) this.stopTicking();
+      this.syncTicking();
     };
     ws.addEventListener('message', (e) => {
       if (typeof e.data !== 'string' || e.data.length > MAX_MESSAGE_BYTES) return;
       session.message(e.data);
+      this.syncTicking();
     });
     ws.addEventListener('close', () => {
       close();
@@ -96,18 +102,27 @@ export class RoomDO extends DurableObject<Env> {
     });
     ws.addEventListener('error', close);
 
-    this.sockets++;
-    this.startTicking();
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private startTicking(): void {
-    this.timer ??= setInterval(() => this.room?.tick(), TICK_MS);
+  /**
+   * Runs the tick timer exactly while the room needs it and someone is connected; checked after
+   * every message and close. An empty paused room resumes ticking (and forfeits if the rejoin
+   * window has passed) when the next socket sends its join.
+   */
+  private syncTicking(): void {
+    if (this.room?.needsTick && !this.room.empty) {
+      this.timer ??= setInterval(() => this.tick(), TICK_MS);
+    } else if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 
-  private stopTicking(): void {
-    if (this.timer !== null) clearInterval(this.timer);
-    this.timer = null;
+  private tick(): void {
+    this.room?.tick();
+    // A match that just ended (KO, decision, forfeit) stops the timer until the next one starts.
+    if (!this.room?.needsTick || this.room.empty) this.syncTicking();
   }
 }
 
@@ -138,6 +153,7 @@ export class DataDO extends DurableObject<Env> {
       adminKey: this.env.ADMIN_KEY || undefined,
       body: () => req.text(),
     });
-    return Response.json(r.body, { status: r.status, headers: r.headers });
+    if (r.json === undefined) return Response.json(r.body, { status: r.status, headers: r.headers });
+    return new Response(r.json, { status: r.status, headers: { 'Content-Type': 'application/json', ...r.headers } });
   }
 }

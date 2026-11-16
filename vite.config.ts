@@ -34,7 +34,8 @@ export default defineConfig({
   plugins: [fixtureWriter],
   root: 'client',
   publicDir: 'public',
-  build: { outDir: '../dist/client', emptyOutDir: true, chunkSizeWarningLimit: 2000 },
+  // No dynamic imports, so the modulepreload polyfill would be dead weight in the entry chunk.
+  build: { outDir: '../dist/client', emptyOutDir: true, chunkSizeWarningLimit: 2000, modulePreload: { polyfill: false } },
   server: {
     port: 5173,
     proxy: { '/ws': { target: 'ws://localhost:3000', ws: true }, '/api': 'http://localhost:3000' },

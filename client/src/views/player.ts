@@ -10,7 +10,7 @@ import { Stage } from '../scene/stage.ts';
 import { KEY_HELP, type InputSource } from '../tracking/input.ts';
 import type { TeachStatus } from '../tracking/teach.ts';
 import { commonEvent } from '../ui/announce.ts';
-import { button, flag, go, h } from '../ui/dom.ts';
+import { button, flag, go, h, setText, setWidth } from '../ui/dom.ts';
 import { Hud } from '../ui/hud.ts';
 import { tuner } from '../ui/tuner.ts';
 import type { SessionLog } from '../tracking/session.ts';
@@ -188,7 +188,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
     const key = JSON.stringify([ts.phase, ts.index, ts.step?.id, ts.reps, ts.verify, ts.scores]);
     if (key === teachKey) {
       const bar = teachBox.querySelector<HTMLElement>('.teach-time i');
-      if (bar) bar.style.width = `${(1 - ts.progress) * 100}%`;
+      if (bar) setWidth(bar, `${(1 - ts.progress) * 100}%`);
       return;
     }
     teachKey = key;
@@ -364,11 +364,11 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       if (teaching) {
         renderTeach(ts);
       } else if (!good && s) {
-        status.textContent = s.stage === 'framing' ? s.message : s.stage === 'hold' ? s.message : 'Calibrated';
-        (progress.firstChild as HTMLElement).style.width = `${s.stage === 'hold' ? s.progress * 100 : 0}%`;
+        setText(status, s.stage === 'framing' ? s.message : s.stage === 'hold' ? s.message : 'Calibrated');
+        setWidth(progress.firstChild as HTMLElement, `${s.stage === 'hold' ? s.progress * 100 : 0}%`);
       } else if (good) {
-        status.textContent = 'Calibrated. Throw a few punches to check tracking.';
-        (progress.firstChild as HTMLElement).style.width = '100%';
+        setText(status, 'Calibrated. Throw a few punches to check tracking.');
+        setWidth(progress.firstChild as HTMLElement, '100%');
       }
       if (wasTeaching && !teaching && good && input.scores.length) {
         resultsUntil = performance.now() + RESULTS_MS;
@@ -378,11 +378,11 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       const showResults = !teaching && performance.now() < resultsUntil;
       teachBox.classList.toggle('on', teaching || showResults);
       teachBox.classList.toggle('results', showResults);
-      learnedNote.textContent = good ? (input.learned.length ? `Using your own model: ${input.learned.length} punches learned` : 'Using the default rules') : '';
+      setText(learnedNote, good ? (input.learned.length ? `Using your own model: ${input.learned.length} punches learned` : 'Using the default rules') : '');
       const weak = good ? input.scores.filter((m) => m.ok < CONFIG.model.verifyPasses) : [];
-      weakNote.textContent = weak.length ? `Read back less reliably: ${weak.map((m) => `${m.prompt} ${m.ok}/${m.tries}`).join(', ')}` : '';
+      setText(weakNote, weak.length ? `Read back less reliably: ${weak.map((m) => `${m.prompt} ${m.ok}/${m.tries}`).join(', ')}` : '');
       reteach.toggleAttribute('disabled', !good);
-      skipTeach.hidden = !teaching;
+      if (skipTeach.hidden !== !teaching) skipTeach.hidden = !teaching;
       if (good !== wasCalibrated) {
         wasCalibrated = good;
         if (!good) ready = false;

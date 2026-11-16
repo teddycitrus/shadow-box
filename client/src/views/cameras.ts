@@ -28,6 +28,12 @@ export class CameraDirector {
   private pos = new THREE.Vector3(0, 2, 4);
   private look = new THREE.Vector3(0, 1.2, 0);
   private snap = true;
+  private want = new THREE.Vector3();
+  private wantLook = new THREE.Vector3();
+  private a = new THREE.Vector3();
+  private b = new THREE.Vector3();
+  private away = new THREE.Vector3();
+  private side = new THREE.Vector3();
   private buttons = new Map<CamMode, HTMLButtonElement>();
   readonly el: HTMLElement;
 
@@ -87,9 +93,9 @@ export class CameraDirector {
       this.nextCut = now + 6000 + Math.random() * 4000;
       this.snap = true;
     }
-    const pos = new THREE.Vector3();
-    const look = new THREE.Vector3(0, 1.2, 0);
-    const a = new THREE.Vector3(), b = new THREE.Vector3();
+    const pos = this.want.set(0, 0, 0);
+    const look = this.wantLook.set(0, 1.2, 0);
+    const { a, b } = this;
     switch (this.shot) {
       case 'broadcast': {
         const ang = t * 0.08;
@@ -110,8 +116,8 @@ export class CameraDirector {
         const me: Slot = this.shot === 'redCorner' ? 0 : 1;
         this.head(me, a);
         this.head(me === 0 ? 1 : 0, b);
-        const away = a.clone().sub(b).setY(0).normalize();
-        const side = new THREE.Vector3(-away.z, 0, away.x);
+        const away = this.away.copy(a).sub(b).setY(0).normalize();
+        const side = this.side.set(-away.z, 0, away.x);
         pos.copy(a).addScaledVector(away, 1.1).addScaledVector(side, 0.45).setY(1.85);
         look.copy(b).setY(1.35);
         break;
@@ -123,7 +129,11 @@ export class CameraDirector {
     this.look.lerp(look, k);
     this.camera.position.copy(this.pos);
     this.camera.lookAt(this.look);
-    this.camera.fov = this.shot === 'overhead' ? 50 : this.shot === 'ringside' ? 48 : 62;
-    this.camera.updateProjectionMatrix();
+    const fov = this.shot === 'overhead' ? 50 : this.shot === 'ringside' ? 48 : 62;
+    // Rebuild the projection only when the lens changes; resize and the Stage kick keep it current otherwise.
+    if (this.camera.fov !== fov) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
   }
 }

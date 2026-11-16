@@ -23,7 +23,7 @@ export class SessionLog {
     if (this.frames.length > MAX_FRAMES) {
       this.frames.splice(0, this.frames.length - MAX_FRAMES);
       const t0 = this.frames[0].t;
-      this.marks = this.marks.filter((m) => m.t >= t0);
+      if (this.marks.some((m) => m.t < t0)) this.marks = this.marks.filter((m) => m.t >= t0);
     }
   }
 

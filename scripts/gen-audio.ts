@@ -51,7 +51,8 @@ function hasFfmpeg(): boolean {
 
 /**
  * Trims leading silence (so punches land on time) and peak-normalizes to PEAK_DB. Loops keep
- * their start untouched so they still loop cleanly.
+ * their start untouched so they still loop cleanly. LAME VBR (-q:a 5) keeps the level intact and
+ * comes out smaller than 128k CBR, which drops about 0.4 dB on these clips.
  */
 function polish(file: string, loop: boolean): void {
   const probe = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', file, '-af', 'volumedetect', '-f', 'null', '-'], { encoding: 'utf8' });
@@ -60,7 +61,7 @@ function polish(file: string, loop: boolean): void {
   const gain = PEAK_DB - Number(m[1]);
   const filters = [...(loop ? [] : ['silenceremove=start_periods=1:start_threshold=-45dB']), `volume=${gain.toFixed(2)}dB`];
   const tmp = `${file}.tmp.mp3`;
-  const r = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-af', filters.join(','), '-c:a', 'libmp3lame', '-b:a', '128k', tmp]);
+  const r = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-af', filters.join(','), '-c:a', 'libmp3lame', '-q:a', '5', tmp]);
   if (r.status === 0) renameSync(tmp, file);
 }
 

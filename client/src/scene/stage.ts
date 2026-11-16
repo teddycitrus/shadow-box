@@ -47,6 +47,8 @@ export class Stage {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     host.appendChild(this.renderer.domElement);
+    // The scene root never moves; leaving it static lets unchanged subtrees skip world matrix updates.
+    this.scene.matrixAutoUpdate = false;
     this.arena = buildArena(this.scene);
     this.scene.add(this.camera);
 
@@ -61,6 +63,7 @@ export class Stage {
     });
     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.flashMat);
     quad.frustumCulled = false;
+    quad.matrixAutoUpdate = false;
     this.overlay.add(quad);
 
     // Sparks look this up so landed hits get a small kick and flash without extra wiring.

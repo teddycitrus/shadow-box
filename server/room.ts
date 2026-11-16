@@ -1,12 +1,15 @@
 import { Match } from '../shared/match.ts';
 import { RULES } from '../shared/rules.ts';
+import { POSE_LEN, applyPoseDelta, cleanPose, encodeDefense, encodeSnapshot, flattenPose, poseDelta, snapshotKey } from '../shared/wire.ts';
 import {
   NO_DEFENSE, other,
-  type ClientMsg, type DefenseState, type LobbyPlayer, type ServerMsg, type Slot, type Stance, type WirePose,
+  type ClientMsg, type DefenseState, type LobbyPlayer, type ServerMsg, type Slot, type Stance,
 } from '../shared/types.ts';
 
 export interface Conn {
   send(m: ServerMsg): void;
+  /** Sends an already serialized message, so a broadcast is stringified once for everyone. */
+  sendRaw?(json: string): void;
 }
 
 interface Player {
@@ -16,11 +19,15 @@ interface Player {
   ready: boolean;
   stance: Stance;
   def: DefenseState;
-  pose: WirePose | null;
+  /** Last pose received from this player, the base its uplink deltas apply to. Reset on attach. */
+  poseIn: number[] | null;
   leftAt: number;
 }
 
 const ACTIVE = new Set(['countdown', 'round', 'break']);
+/** Snapshot rate cap, and the longest gap between snapshots while a match runs. */
+const STATE_MS = 100;
+const STATE_HEARTBEAT_MS = 1_000;
 
 /** Web Crypto works in Node and in Workers, so the room runs unchanged in both. */
 function randomHex(bytes: number): string {
@@ -33,11 +40,21 @@ export class Room {
   readonly spectators = new Set<Conn>();
   match: Match | null = null;
   lastActivity: number;
-  private lastState = 0;
+  /** Last snapshot sent, and last time one was considered. */
+  private lastState = -Infinity;
+  private lastCheck = -Infinity;
+  private lastKey = '';
   private seq = 1;
+  /** Last relayed pose per slot, flattened. Every connected receiver holds the same base. */
+  private poses: [number[] | null, number[] | null] = [null, null];
 
   constructor(readonly code: string, private now: () => number) {
     this.lastActivity = now();
+  }
+
+  /** True while the match clock, a pause timeout or pending events need tick() calls. */
+  get needsTick(): boolean {
+    return !!this.match && this.match.phase !== 'ended' && this.match.phase !== 'lobby';
   }
 
   get empty(): boolean {
@@ -57,7 +74,7 @@ export class Room {
     if (free < 0) return null;
     this.players[free] = {
       token: randomHex(12), conn: null, calibrated: false, ready: false,
-      stance: 'orthodox', def: NO_DEFENSE, pose: null, leftAt: 0,
+      stance: 'orthodox', def: NO_DEFENSE, poseIn: null, leftAt: 0,
     };
     return this.attach(free as Slot, conn);
   }
@@ -65,11 +82,13 @@ export class Room {
   private attach(slot: Slot, conn: Conn): Slot {
     const p = this.players[slot]!;
     p.conn = conn;
+    p.poseIn = null;
     conn.send({ t: 'joined', code: this.code, role: 'player', slot, token: p.token });
     if (this.match?.paused && this.players.every((x) => x?.conn)) this.match.resume(this.now());
     this.sendLobby();
     this.sendState(true);
     this.catchUp(conn);
+    this.sendPoses(conn, other(slot));
     return slot;
   }
 
@@ -79,6 +98,14 @@ export class Room {
     this.sendLobby();
     this.sendState(true);
     this.catchUp(conn);
+    this.sendPoses(conn, 0);
+    this.sendPoses(conn, 1);
+  }
+
+  /** Gives a newcomer the full last pose of a slot, so the deltas that follow apply to it. */
+  private sendPoses(conn: Conn, slot: Slot): void {
+    const k = this.poses[slot];
+    if (k) conn.send({ t: 'pose', slot, k, d: encodeDefense(this.players[slot]?.def ?? NO_DEFENSE) });
   }
 
   /** Replays the event a late joiner needs to show the right screen (pause banner or result). */
@@ -108,11 +135,17 @@ export class Room {
     this.lastActivity = this.now();
     const now = this.now();
     switch (m.t) {
-      case 'pose':
-        if (!Array.isArray(m.p?.lm) || m.p.lm.length !== 39) return;
-        p.pose = m.p;
-        this.broadcast({ t: 'pose', slot, p: m.p, def: p.def }, conn);
+      case 'pose': {
+        const cur = readPose(m, p.poseIn);
+        if (!cur) return;
+        p.poseIn = cur;
+        // Relayed as a delta from the slot's last relayed pose (the first one in full).
+        const prev = this.poses[slot];
+        this.poses[slot] = cur;
+        const d = encodeDefense(p.def);
+        this.broadcast(prev ? { t: 'pose', slot, dp: poseDelta(cur, prev), d } : { t: 'pose', slot, k: cur, d }, conn);
         break;
+      }
       case 'defense':
         p.def = m.def;
         this.match?.setDefense(slot, m.def, m.at, now);
@@ -152,7 +185,7 @@ export class Room {
       m.tick(now);
       this.flush();
     }
-    if (now - this.lastState >= 100) this.sendState();
+    if (now - this.lastCheck >= STATE_MS) this.sendState();
   }
 
   private rejoinMs(): number | null {
@@ -164,15 +197,28 @@ export class Room {
   private flush(): void {
     if (!this.match) return;
     const evs = this.match.drain();
-    for (const ev of evs) this.broadcast({ t: 'event', ev, at: this.now(), id: this.seq++ });
-    if (evs.length) this.sendState(true);
+    if (!evs.length) return;
+    const at = Math.round(this.now());
+    for (const ev of evs) this.broadcast({ t: 'event', ev, at, id: this.seq++ });
+    this.sendState(true);
   }
 
+  /**
+   * Sends a snapshot when something a viewer can see has changed (see snapshotKey), at most every
+   * STATE_MS and at least every STATE_HEARTBEAT_MS. Forced sends go out regardless.
+   */
   private sendState(force = false): void {
     if (!this.match) return;
     if (!force && this.match.phase === 'ended') return;
-    this.lastState = this.now();
-    this.broadcast({ t: 'state', s: this.match.snapshot(), rejoinMs: this.rejoinMs() });
+    const now = this.now();
+    this.lastCheck = now;
+    const s = encodeSnapshot(this.match.snapshot());
+    const rejoin = this.rejoinMs();
+    const key = snapshotKey(s, rejoin);
+    if (!force && key === this.lastKey && now - this.lastState < STATE_HEARTBEAT_MS) return;
+    this.lastState = now;
+    this.lastKey = key;
+    this.broadcast(rejoin === null ? { t: 'state', s } : { t: 'state', s, r: Math.round(rejoin) });
   }
 
   sendLobby(): void {
@@ -182,13 +228,31 @@ export class Room {
   }
 
   private broadcast(m: ServerMsg, except?: Conn): void {
-    for (const p of this.players) if (p?.conn && p.conn !== except) p.conn.send(m);
-    for (const s of this.spectators) if (s !== except) s.send(m);
+    let json: string | null = null;
+    const out = (c: Conn) => {
+      if (c === except) return;
+      if (c.sendRaw) c.sendRaw((json ??= JSON.stringify(m)));
+      else c.send(m);
+    };
+    for (const p of this.players) if (p?.conn) out(p.conn);
+    for (const s of this.spectators) out(s);
   }
 
   opponentOf(slot: Slot): Player | null {
     return this.players[other(slot)];
   }
+}
+
+/**
+ * The flattened pose in a client pose message, or null if it is malformed or is a delta with no
+ * base. Only the known fields are read, so extra junk in a message is not fanned out.
+ */
+function readPose(m: Extract<ClientMsg, { t: 'pose' }>, base: number[] | null): number[] | null {
+  const ok = (a: unknown): a is number[] => Array.isArray(a) && a.length === POSE_LEN;
+  if (ok(m.k)) return cleanPose(m.k);
+  if (ok(m.dp)) return base ? cleanPose(applyPoseDelta(base, m.dp)) : null;
+  if (Array.isArray(m.p?.lm) && m.p.lm.length === 39) return flattenPose(m.p);
+  return null;
 }
 
 const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';

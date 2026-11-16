@@ -1,4 +1,5 @@
-import type { ClientMsg, DefenseState, Punch, ServerMsg, Slot, Stance, WirePose } from '../../../shared/types.ts';
+import type { ClientMsg, DefenseState, MatchSnapshot, Punch, ServerMsg, Slot, Stance, WirePose } from '../../../shared/types.ts';
+import { applyPoseDelta, decodeDefense, decodeSnapshot, flattenPose, poseDelta, unflattenPose } from '../../../shared/wire.ts';
 import { sound } from '../audio/sound.ts';
 import { noopHandlers, type MatchLink } from './link.ts';
 
@@ -21,6 +22,11 @@ export class OnlineLink implements MatchLink {
   private offset = 0;
   private bestRtt = Infinity;
   private lastReady: Extract<ClientMsg, { t: 'ready' }> | null = null;
+  /** Last full pose per slot, the base the server's pose deltas apply to. Reset on each join. */
+  private poseBase: [number[] | null, number[] | null] = [null, null];
+  /** Last pose sent since this socket joined; later poses go up as deltas from it. */
+  private poseSent: number[] | null = null;
+  private joined = false;
   private closed = false;
 
   constructor(private mode: Connect) {
@@ -41,6 +47,7 @@ export class OnlineLink implements MatchLink {
     const query = code ? `code=${encodeURIComponent(code)}` : 'create=1';
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?${query}`);
     this.ws = ws;
+    this.joined = false;
     ws.onopen = () => {
       this.onConnection(true);
       const m = this.mode;
@@ -64,6 +71,9 @@ export class OnlineLink implements MatchLink {
       case 'joined':
         this.code = m.code;
         this.slot = m.slot;
+        this.poseBase = [null, null];
+        this.poseSent = null;
+        this.joined = true;
         if (m.token) localStorage.setItem(tokenKey(m.code), m.token);
         if (this.lastReady) this.send(this.lastReady);
         this.onJoined(m.code, m.slot);
@@ -84,12 +94,27 @@ export class OnlineLink implements MatchLink {
       case 'lobby':
         this.handlers.lobby(m.players, m.spectators);
         break;
-      case 'pose':
-        this.handlers.pose(m.slot, m.p, m.def);
+      case 'pose': {
+        // Older servers sent the plain pose in `p` and the defense object in `def`.
+        const old = m as { p?: WirePose; def?: DefenseState };
+        if (old.p && old.def) {
+          this.handlers.pose(m.slot, old.p, old.def);
+          break;
+        }
+        const base = this.poseBase[m.slot];
+        const full = m.k ?? (m.dp && base ? applyPoseDelta(base, m.dp) : null);
+        if (!full) break;
+        this.poseBase[m.slot] = full;
+        this.handlers.pose(m.slot, unflattenPose(full), decodeDefense(m.d));
         break;
-      case 'state':
-        this.handlers.state(m.s, m.rejoinMs);
+      }
+      case 'state': {
+        // Older servers sent the plain snapshot and `rejoinMs`.
+        const s: unknown = m.s;
+        const rejoin = m.r ?? (m as { rejoinMs?: number | null }).rejoinMs ?? null;
+        this.handlers.state(Array.isArray(s) ? decodeSnapshot(s) : (s as MatchSnapshot), rejoin);
         break;
+      }
       case 'event': {
         // Every client schedules the event's sounds for the same server moment (event time plus a
         // small shared latency budget), with the same seeded random choices.
@@ -105,19 +130,24 @@ export class OnlineLink implements MatchLink {
   }
 
   private ping(): void {
-    this.send({ t: 'ping', c: performance.now() });
+    this.send({ t: 'ping', c: Math.round(performance.now() * 10) / 10 });
   }
 
   punch(punch: Punch, at: number): void {
-    this.send({ t: 'punch', punch, at: this.serverTime(at) });
+    this.send({ t: 'punch', punch, at: Math.round(this.serverTime(at)) });
   }
 
   defense(def: DefenseState, at: number): void {
-    this.send({ t: 'defense', def, at: this.serverTime(at) });
+    this.send({ t: 'defense', def, at: Math.round(this.serverTime(at)) });
   }
 
   pose(p: WirePose): void {
-    this.send({ t: 'pose', p });
+    // The server keeps a delta base per join, so nothing is sent until this socket has joined.
+    if (!this.joined || this.ws?.readyState !== WebSocket.OPEN) return;
+    const cur = flattenPose(p);
+    const prev = this.poseSent;
+    this.poseSent = cur;
+    this.send(prev ? { t: 'pose', dp: poseDelta(cur, prev) } : { t: 'pose', k: cur });
   }
 
   ready(ready: boolean, calibrated: boolean, stance: Stance): void {

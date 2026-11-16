@@ -100,10 +100,10 @@ flowchart LR
   WS --> Room
   Room -->|"punch, defense"| Match
   Match -->|"events, snapshot"| Room
-  WS -->|"state 10 Hz, events,<br/>relayed poses"| Link
+  WS -->|"state on change (max 10 Hz), events,<br/>pose deltas"| Link
   Link -->|"handlers"| View
   PB <-->|"same protocol"| WS
-  WS -->|"state 10 Hz, events,<br/>relayed poses"| Spec
+  WS -->|"state on change (max 10 Hz), events,<br/>pose deltas"| Spec
   HTTP -->|"page, model, WASM"| View
   Tun -.->|"optional public URL"| HTTP
   CL -.->|"practice mode"| Bot
@@ -118,7 +118,7 @@ flowchart LR
   subgraph CF["Cloudflare"]
     W["Worker<br/><sub>worker/index.ts</sub>"]
     A[("Static Assets<br/><sub>dist/client</sub>")]
-    DO["RoomDO per code<br/><sub>Room + Match, 60 Hz tick</sub>"]
+    DO["RoomDO per code<br/><sub>Room + Match, 60 Hz tick during a match</sub>"]
     DD[("DataDO 'global'<br/><sub>population prior</sub>")]
   end
   C -->|"page, model, WASM, audio"| A
@@ -180,7 +180,7 @@ The defense window is 150 ms before to 80 ms after the punch peak. Any defense h
 
 Hard limits:
 
-- Poses are sent at most 20 times per second; full state is broadcast every 100 ms (10 Hz) and immediately after any match event.
+- Poses are sent at most 20 times per second, as changes after one full pose. State is broadcast only when it changes (at most 10 Hz, with a 1 s heartbeat) and immediately after any match event.
 - Punch timestamps older than 400 ms on arrival are clamped to 400 ms, and timestamps in the future are clamped to now.
 - WebSocket messages are capped at 64 KB (`maxPayload`). Pose messages must carry exactly 13 landmarks (39 numbers).
 - A disconnect mid-match pauses it; the player has 60 s to rejoin with the token stored in `localStorage`, then forfeits.
@@ -367,6 +367,7 @@ client/
   index.html
   public/
     audio/            optional mp3 overrides
+    fonts/            WOFF2 web fonts and their OFL license
     models/           pose_landmarker_full.task, pose_landmarker_lite.task (downloaded by scripts/copy-assets.mjs if missing)
     mediapipe/wasm/   copied from node_modules by scripts/copy-assets.mjs
   src/

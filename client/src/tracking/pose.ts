@@ -1,4 +1,7 @@
-import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
+import type { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
+
+/** MediaPipe loads only when the camera starts, so the title screen and keyboard mode skip it. */
+const vision = () => import('@mediapipe/tasks-vision');
 import type { Lm, PoseFrame } from './frame.ts';
 
 const BASE = import.meta.env.BASE_URL;
@@ -59,7 +62,7 @@ export class PoseTracker {
     this.video.muted = true;
     this.video.playsInline = true;
     await this.video.play();
-    this.fileset = await FilesetResolver.forVisionTasks(`${BASE}mediapipe/wasm`);
+    this.fileset = await (await vision()).FilesetResolver.forVisionTasks(`${BASE}mediapipe/wasm`);
     await this.load(this.model);
     this.running = true;
     this.startedAt = performance.now();
@@ -82,10 +85,10 @@ export class PoseTracker {
     let lm: PoseLandmarker;
     let delegate: 'GPU' | 'CPU';
     try {
-      lm = await PoseLandmarker.createFromOptions(this.fileset!, this.opts(model, 'GPU'));
+      lm = await (await vision()).PoseLandmarker.createFromOptions(this.fileset!, this.opts(model, 'GPU'));
       delegate = 'GPU';
     } catch {
-      lm = await PoseLandmarker.createFromOptions(this.fileset!, this.opts(model, 'CPU'));
+      lm = await (await vision()).PoseLandmarker.createFromOptions(this.fileset!, this.opts(model, 'CPU'));
       delegate = 'CPU';
     }
     this.landmarker?.close();
@@ -141,11 +144,7 @@ export class PoseTracker {
       this.onFrame(null);
       return;
     }
-    const aspect = v.videoWidth / v.videoHeight;
-    const conv = (p: { x: number; y: number; z: number; visibility?: number }, k: number): Lm => ({
-      x: p.x * k, y: p.y, z: p.z, v: p.visibility ?? 1,
-    });
-    this.onFrame({ t, img: img.map((p) => conv(p, aspect)), world: world.map((p) => conv(p, 1)) });
+    this.onFrame({ t, img: toLms(img, v.videoWidth / v.videoHeight), world: toLms(world, 1) });
   }
 
   /**
@@ -180,4 +179,11 @@ export class PoseTracker {
     this.landmarker?.close();
     (this.video.srcObject as MediaStream | null)?.getTracks().forEach((t) => t.stop());
   }
+}
+
+/** MediaPipe landmarks as Lm, x scaled by k (the frame aspect ratio for image landmarks). */
+function toLms(ps: { x: number; y: number; z: number; visibility?: number }[], k: number): Lm[] {
+  const out: Lm[] = [];
+  for (const p of ps) out.push({ x: p.x * k, y: p.y, z: p.z, v: p.visibility ?? 1 });
+  return out;
 }

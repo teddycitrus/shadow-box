@@ -30,6 +30,8 @@ export interface ApiResult {
   status: number;
   body: unknown;
   headers?: Record<string, string>;
+  /** `body` already serialized, when the store keeps it cached (the prior). */
+  json?: string;
 }
 
 export const PRIOR_TTL_MS = 5 * 60_000;
@@ -37,6 +39,8 @@ export const UPLOADS_PER_HOUR = 5;
 export const UPLOADS_PER_DAY = 2_000;
 const HOUR = 3_600_000;
 const EXPORT_PAGE = 200;
+/** Upload ids remembered in memory to drop resubmissions when full calibrations are not stored. */
+const SEEN_IDS = 10_000;
 /**
  * The built prior is stored per data version, so a version bump starts a fresh one instead of
  * serving the old version's (which clients reject). The reservoirs hold only segment features and
@@ -44,11 +48,18 @@ const EXPORT_PAGE = 200;
  */
 const PRIOR_KEY = `prior:v${DATA_VERSION}`;
 
+/**
+ * Storage holds only what the prior needs: the per-group reservoirs, a count and the built prior.
+ * Full calibrations (`cal:<id>`) are stored only while export is enabled (ADMIN_KEY set), since
+ * /api/export is their only reader.
+ */
 export class CalibrationStore {
   private res: Map<string, Reservoir> | null = null;
+  private metaLoaded = false;
   private calibrations = 0;
-  private prior: { at: number; value: Prior } | null = null;
+  private prior: { at: number; value: Prior; json?: string } | null = null;
   private dirty = true;
+  private seen = new Set<string>();
   private hits = new Map<string, number[]>();
   private daily = { day: '', n: 0 };
   /** Per-instance salt for the in-memory rate limit keys; never stored. */
@@ -57,13 +68,14 @@ export class CalibrationStore {
   constructor(private kv: DataKV, private now: () => number = Date.now, private rng: () => number = Math.random) {}
 
   async handle(req: ApiRequest): Promise<ApiResult> {
-    if (req.path === '/api/calibration') return req.method === 'POST' ? this.submit(await req.body(), req.ip) : notAllowed();
+    if (req.path === '/api/calibration') return req.method === 'POST' ? this.submit(await req.body(), req.ip, !!req.adminKey) : notAllowed();
     if (req.path === '/api/prior') return req.method === 'GET' ? this.getPrior(req.search.get('version')) : notAllowed();
     if (req.path === '/api/export') return req.method === 'GET' ? this.exportPage(req) : notAllowed();
     return { status: 404, body: { error: 'not found' } };
   }
 
-  async submit(raw: string, ip: string): Promise<ApiResult> {
+  /** `keepFull` stores the whole calibration for /api/export; otherwise only the reservoirs change. */
+  async submit(raw: string, ip: string, keepFull = false): Promise<ApiResult> {
     if (raw.length > MAX_BODY_BYTES) return { status: 413, body: { error: 'too large' } };
     const t = this.now();
     const key = await this.ipKey(ip);
@@ -84,32 +96,38 @@ export class CalibrationStore {
     }
     const c = validateCalibration(parsed);
     if (typeof c === 'string') return { status: 400, body: { error: c } };
-    await this.load();
-    if (await this.kv.get(`cal:${c.id}`)) return { status: 200, body: { ok: true, duplicate: true } };
+    await this.loadReservoirs();
+    if (this.seen.has(c.id) || (keepFull && await this.kv.get(`cal:${c.id}`))) return { status: 200, body: { ok: true, duplicate: true } };
+    if (this.seen.size >= SEEN_IDS) this.seen.clear();
+    this.seen.add(c.id);
     this.daily.n++;
-    const stored: StoredCalibration = { ...c, day };
-    const writes: Record<string, unknown> = { [`cal:${c.id}`]: stored };
+    const writes: Record<string, unknown> = {};
+    if (keepFull) writes[`cal:${c.id}`] = { ...c, day } satisfies StoredCalibration;
     if (quality(c) >= MIN_QUALITY) {
       for (const k of addToReservoirs(this.res!, c, this.rng)) writes[`res:${k}`] = this.res!.get(k);
       this.calibrations++;
       writes.meta = { calibrations: this.calibrations };
       this.dirty = true;
     }
-    await this.kv.put(writes);
+    if (Object.keys(writes).length) await this.kv.put(writes);
     return { status: 201, body: { ok: true } };
   }
 
   async getPrior(version: string | null): Promise<ApiResult> {
     if (version !== String(DATA_VERSION)) return { status: 404, body: { error: `no prior for version ${version ?? '(none)'}` } };
     const t = this.now();
-    await this.load();
+    await this.loadMeta();
     if (!this.prior || (this.dirty && t - this.prior.at >= PRIOR_TTL_MS)) {
       // Rebuilt at most every PRIOR_TTL_MS and stored, so a restarted object does not redo it.
-      this.prior = { at: t, value: computePrior(this.res!, this.calibrations, t, this.rng) };
+      await this.loadReservoirs();
+      const value = computePrior(this.res!, this.calibrations, t, this.rng);
+      this.prior = { at: t, value };
       this.dirty = false;
-      await this.kv.put({ [PRIOR_KEY]: this.prior });
+      await this.kv.put({ [PRIOR_KEY]: { at: t, value } });
     }
-    return { status: 200, body: this.prior.value, headers: { 'Cache-Control': `public, max-age=${PRIOR_TTL_MS / 1000}` } };
+    // Serialized once per build instead of once per request.
+    this.prior.json ??= JSON.stringify(this.prior.value);
+    return { status: 200, body: this.prior.value, json: this.prior.json, headers: { 'Cache-Control': `public, max-age=${PRIOR_TTL_MS / 1000}` } };
   }
 
   async exportPage(req: ApiRequest): Promise<ApiResult> {
@@ -121,13 +139,21 @@ export class CalibrationStore {
     return { status: 200, body: { items: rows.map(([, v]) => v), next: rows.length === limit ? rows.at(-1)![0] : null } };
   }
 
-  private async load(): Promise<void> {
-    if (this.res) return;
-    const res = new Map<string, Reservoir>();
-    for (const [k, v] of await this.kv.list<Reservoir>('res:', undefined, 64)) res.set(k.slice(4), v);
+  /** The count and the stored prior: all a cached prior request needs after a restart. */
+  private async loadMeta(): Promise<void> {
+    if (this.metaLoaded) return;
     this.calibrations = (await this.kv.get<{ calibrations: number }>('meta'))?.calibrations ?? 0;
     this.prior ??= (await this.kv.get<{ at: number; value: Prior }>(PRIOR_KEY)) ?? null;
     this.dirty = this.prior?.value.calibrations !== this.calibrations;
+    this.metaLoaded = true;
+  }
+
+  /** The reservoirs (the bulk of the data), read only to take an upload or rebuild the prior. */
+  private async loadReservoirs(): Promise<void> {
+    await this.loadMeta();
+    if (this.res) return;
+    const res = new Map<string, Reservoir>();
+    for (const [k, v] of await this.kv.list<Reservoir>('res:', undefined, 64)) res.set(k.slice(4), v);
     this.res = res;
   }
 

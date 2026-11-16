@@ -1,7 +1,7 @@
 import { RULES } from '../../../shared/rules.ts';
 import type { DefenseState, FighterSnapshot, MatchResult, MatchSnapshot, Punch, Slot, Zone } from '../../../shared/types.ts';
 import { clockTick } from './announce.ts';
-import { h } from './dom.ts';
+import { h, setText, setWidth } from './dom.ts';
 
 const fmt = (ms: number) => {
   const s = Math.ceil(ms / 1000);
@@ -64,7 +64,7 @@ export class Hud {
   setDefense(slot: Slot, d: DefenseState): void {
     const parts = [d.guard && 'Guard', d.duck && 'Duck', d.slip !== 'none' && `Slip ${d.slip}`].filter(Boolean) as string[];
     const el = this.bars[slot].def;
-    el.textContent = parts.join(' + ');
+    setText(el, parts.join(' + '));
     el.classList.toggle('on', parts.length > 0);
   }
 
@@ -104,7 +104,7 @@ export class Hud {
     this.snap = s;
     this.snapAt = performance.now();
     s.fighters.forEach((f, i) => this.setFighter(i as Slot, f));
-    this.round.textContent = s.phase === 'break' ? `Round ${s.round + 1} next` : s.phase === 'countdown' ? 'Get ready' : `Round ${Math.max(1, s.round)} of ${RULES.rounds}`;
+    setText(this.round, s.phase === 'break' ? `Round ${s.round + 1} next` : s.phase === 'countdown' ? 'Get ready' : `Round ${Math.max(1, s.round)} of ${RULES.rounds}`);
     [...this.pips.children].forEach((p, i) => p.classList.toggle('on', s.phase !== 'lobby' && i < Math.max(1, s.round)));
     if (s.paused && !this.paused) this.show('Paused', 0);
     else if (!s.paused && this.paused && this.banner.textContent === 'Paused') this.hideBanner();
@@ -113,7 +113,7 @@ export class Hud {
     const down = downIdx >= 0 ? s.fighters[downIdx] : undefined;
     const n = down ? String(down.count) : '';
     if (n && n !== this.count.textContent) this.retrigger(this.count, 'slam');
-    this.count.textContent = n;
+    setText(this.count, n);
     this.count.classList.toggle('on', !!down);
     this.count.classList.toggle('red', downIdx === 0);
     this.count.classList.toggle('blue', downIdx === 1);
@@ -122,16 +122,16 @@ export class Hud {
   private setFighter(i: Slot, f: FighterSnapshot): void {
     const b = this.bars[i];
     const hp = (f.hp / RULES.maxHp) * 100;
-    b.hp.style.width = `${hp}%`;
-    b.hpGhost.style.width = `${hp}%`;
+    setWidth(b.hp, `${hp}%`);
+    setWidth(b.hpGhost, `${hp}%`);
     if (f.hp < b.lastHp) this.retrigger(b.box, 'hit');
     b.lastHp = f.hp;
-    b.st.style.width = `${(f.stamina / RULES.maxStamina) * 100}%`;
-    b.stNum.textContent = f.exhausted ? 'EXHAUSTED' : f.gassed ? `${Math.round(f.stamina)} GASSED` : String(Math.round(f.stamina));
+    setWidth(b.st, `${(f.stamina / RULES.maxStamina) * 100}%`);
+    setText(b.stNum, f.exhausted ? 'EXHAUSTED' : f.gassed ? `${Math.round(f.stamina)} GASSED` : String(Math.round(f.stamina)));
     b.box.classList.toggle('gassed', f.gassed);
     b.box.classList.toggle('exhausted', f.exhausted);
     b.box.classList.toggle('low', hp <= 25);
-    b.kd.textContent = f.knockdowns ? 'KD '.repeat(f.knockdowns).trim() : '';
+    setText(b.kd, f.knockdowns ? 'KD '.repeat(f.knockdowns).trim() : '');
     b.kd.classList.toggle('on', f.knockdowns > 0);
   }
 
@@ -141,7 +141,7 @@ export class Hud {
     if (!s) return;
     const running = !s.paused && s.phase !== 'ended' && s.phase !== 'lobby' && !(s.phase === 'round' && s.fighters.some((f) => f.status !== 'up'));
     const ms = running ? s.clockMs - (performance.now() - this.snapAt) : s.clockMs;
-    this.clock.textContent = s.phase === 'lobby' ? fmt(RULES.roundMs) : fmt(Math.max(0, ms));
+    setText(this.clock, s.phase === 'lobby' ? fmt(RULES.roundMs) : fmt(Math.max(0, ms)));
     this.clock.classList.toggle('low', s.phase === 'round' && ms < 10_000);
     if (this.audible) clockTick(Math.max(0, ms), s.phase);
   }
@@ -170,7 +170,7 @@ export class Hud {
   }
 
   setSub(text: string): void {
-    this.sub.textContent = text;
+    setText(this.sub, text);
     this.sub.classList.toggle('on', !!text);
   }
 

@@ -29,6 +29,9 @@ interface Pending {
   resolveAt: number;
 }
 
+/** Returned by drain() when there is nothing new, so idle ticks allocate nothing. Never mutated. */
+const NO_EVENTS: MatchEvent[] = [];
+
 function newFighter(): Fighter {
   return {
     hp: RULES.maxHp, stamina: RULES.maxStamina, exhausted: false, knockdowns: 0, status: 'up',
@@ -139,16 +142,17 @@ export class Match {
     const dt = Math.max(0, g - this.game);
     this.game = g;
 
-    this.pending.sort((a, b) => a.resolveAt - b.resolveAt);
+    if (this.pending.length > 1) this.pending.sort((a, b) => a.resolveAt - b.resolveAt);
     while (this.pending.length && this.pending[0].resolveAt <= g && !this.ended) {
       this.resolve(this.pending.shift()!);
     }
     if (this.ended) return;
 
-    for (const slot of [0, 1] as Slot[]) this.tickFighter(slot, g, dt);
+    this.tickFighter(0, g, dt);
+    this.tickFighter(1, g, dt);
     if (this.ended) return;
 
-    const someoneDown = this.fighters.some((f) => f.status !== 'up');
+    const someoneDown = this.fighters[0].status !== 'up' || this.fighters[1].status !== 'up';
     if (this.phase === 'round' && someoneDown) return;
     this.clock -= dt;
     while (this.clock <= 0 && !this.ended) {
@@ -267,6 +271,7 @@ export class Match {
   }
 
   drain(): MatchEvent[] {
+    if (!this.events.length) return NO_EVENTS;
     const out = this.events;
     this.events = [];
     return out;

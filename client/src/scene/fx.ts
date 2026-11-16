@@ -238,7 +238,8 @@ export function toonGradient(): THREE.DataTexture {
 
 /**
  * Inverted-hull outline: back faces pushed out along view-space normals by a constant world
- * thickness, so non-uniformly scaled limbs get an even line.
+ * thickness, so non-uniformly scaled limbs get an even line. Works on instanced meshes too; the
+ * instance normal transform matches three's own (rotation and scale, no shear).
  */
 export function outlineMaterial(thickness = 0.008, color = 0x07070c): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
@@ -246,8 +247,15 @@ export function outlineMaterial(thickness = 0.008, color = 0x07070c): THREE.Shad
     vertexShader: /* glsl */ `
       uniform float uT;
       void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vec3 n = normalize(normalMatrix * normal);
+        #ifdef USE_INSTANCING
+          mat3 im = mat3(instanceMatrix);
+          vec3 objN = im * (normal / vec3(dot(im[0], im[0]), dot(im[1], im[1]), dot(im[2], im[2])));
+          vec4 mv = modelViewMatrix * (instanceMatrix * vec4(position, 1.0));
+        #else
+          vec3 objN = normal;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        #endif
+        vec3 n = normalize(normalMatrix * objN);
         mv.xyz += n * uT;
         gl_Position = projectionMatrix * mv;
       }`,

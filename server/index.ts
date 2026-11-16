@@ -17,6 +17,7 @@ const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.wasm': 'application/wasm', '.task': 'application/octet-stream', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg',
   '.wav': 'audio/wav', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.glb': 'model/gltf-binary',
+  '.woff2': 'font/woff2',
 };
 
 const now = () => performance.now();
@@ -57,7 +58,7 @@ async function api(store: CalibrationStore, req: IncomingMessage, res: ServerRes
     ip: req.socket.remoteAddress ?? 'unknown', auth: req.headers.authorization ?? null,
     adminKey: process.env.ADMIN_KEY || undefined, body: () => readBody(req),
   });
-  res.writeHead(r.status, { 'Content-Type': 'application/json', ...r.headers }).end(JSON.stringify(r.body));
+  res.writeHead(r.status, { 'Content-Type': 'application/json', ...r.headers }).end(r.json ?? JSON.stringify(r.body));
 }
 
 export function startServer(port: number, opts: { tickMs?: number; dataFile?: string } = {}): Promise<{ port: number; close(): Promise<void> }> {
@@ -107,18 +108,23 @@ export function startServer(port: number, opts: { tickMs?: number; dataFile?: st
   // The room is chosen by the first create/join/watch message. Query parameters (?create=1,
   // ?code=XXXX) are only needed for Durable Object routing on Cloudflare and are ignored here.
   wss.on('connection', (ws: WebSocket) => {
-    const conn: Conn = { send: (m: ServerMsg) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)) };
+    const conn: Conn = {
+      send: (m: ServerMsg) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),
+      sendRaw: (json: string) => ws.readyState === ws.OPEN && ws.send(json),
+    };
     const session = new Session(conn, registry, now);
     ws.on('message', (data) => session.message(String(data)));
     ws.on('close', () => session.close());
   });
 
+  // Only rooms with a running match need the 60 Hz tick; idle-room cleanup runs once a second.
+  let lastSweep = now();
   const timer = setInterval(() => {
     const t = now();
-    for (const [code, r] of rooms) {
-      r.tick();
-      if (r.empty && t - r.lastActivity > ROOM_IDLE_MS) rooms.delete(code);
-    }
+    for (const r of rooms.values()) if (r.needsTick) r.tick();
+    if (t - lastSweep < 1_000) return;
+    lastSweep = t;
+    for (const [code, r] of rooms) if (r.empty && t - r.lastActivity > ROOM_IDLE_MS) rooms.delete(code);
   }, opts.tickMs ?? 1000 / 60);
 
   const close = () => new Promise<void>((done) => {

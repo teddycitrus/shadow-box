@@ -175,7 +175,7 @@ describe('CalibrationStore', () => {
 
   it('export is disabled without ADMIN_KEY and needs the bearer key', async () => {
     const store = new CalibrationStore(new MemoryKV(), () => 0, seeded(4));
-    for (let i = 0; i < 3; i++) await store.submit(JSON.stringify(upload()), `ip${i}`);
+    for (let i = 0; i < 3; i++) await store.submit(JSON.stringify(upload()), `ip${i}`, true);
     expect((await store.handle(req({ path: '/api/export' }))).status).toBe(404);
     expect((await store.handle(req({ path: '/api/export', adminKey: 'k', auth: 'Bearer nope' }))).status).toBe(401);
     const page1 = await store.handle(req({ path: '/api/export', adminKey: 'k', auth: 'Bearer k', search: new URLSearchParams('limit=2') }));
@@ -186,6 +186,95 @@ describe('CalibrationStore', () => {
     expect((page2.body as { items: unknown[]; next: null }).items.length).toBe(1);
   });
 });
+
+describe('CalibrationStore storage', () => {
+  const post = (raw: string, adminKey?: string): ApiRequest => ({
+    method: 'POST', path: '/api/calibration', search: new URLSearchParams(), ip: '1.2.3.4', auth: null, adminKey, body: async () => raw,
+  });
+
+  it('stores only the reservoirs while export is disabled, and still drops resubmissions', async () => {
+    const kv = new MemoryKV();
+    const store = new CalibrationStore(kv, () => 0, seeded(3));
+    const a = JSON.stringify(upload());
+    expect((await store.handle(post(a))).status).toBe(201);
+    expect((await store.handle(post(a))).body).toEqual({ ok: true, duplicate: true });
+    expect([...kv.data.keys()].some((k) => k.startsWith('cal:'))).toBe(false);
+    expect(((await store.getPrior('6')).body as { calibrations: number }).calibrations).toBe(1);
+  });
+
+  it('keeps full calibrations for export when ADMIN_KEY is set', async () => {
+    const kv = new MemoryKV();
+    const store = new CalibrationStore(kv, () => 0, seeded(3));
+    expect((await store.handle(post(JSON.stringify(upload()), 'k'))).status).toBe(201);
+    expect([...kv.data.keys()].filter((k) => k.startsWith('cal:')).length).toBe(1);
+  });
+
+  it('serves the prior from storage after a restart without reading the reservoirs', async () => {
+    const kv = new MemoryKV();
+    const store = new CalibrationStore(kv, () => 0, seeded(3));
+    await store.submit(JSON.stringify(upload()), 'a');
+    const built = await store.getPrior('6');
+    const listed: string[] = [];
+    const spy = Object.assign(Object.create(kv) as MemoryKV, {
+      list: (prefix: string, after: string | undefined, limit: number) => (listed.push(prefix), kv.list(prefix, after, limit)),
+    });
+    const again = await new CalibrationStore(spy, () => 0, seeded(3)).getPrior('6');
+    expect(again.json).toBe(built.json);
+    expect(listed).toEqual([]);
+  });
+
+  it('representatives match the plain array reference implementation', () => {
+    const r = seeded(11);
+    const vs = Array.from({ length: 120 }, () => Array.from({ length: FEATURE_COUNT }, () => r() * 4 - 2));
+    const scale = Array.from({ length: FEATURE_COUNT }, (_, i) => 0.5 + i * 0.1);
+    expect(representatives(vs, 12, scale, seeded(4))).toEqual(referenceRepresentatives(vs, 12, scale, seeded(4)));
+  });
+});
+
+/** The original arrays-of-arrays k-means, kept to pin the typed array version to identical output. */
+function referenceRepresentatives(vs: number[][], k: number, scale: number[], rng: () => number, iters = 4): number[][] {
+  const sq = (a: number[], b: number[]) => a.reduce((s, x, i) => s + (x - b[i]) ** 2, 0);
+  const z = vs.map((v) => v.map((x, i) => x / (scale[i] || 1)));
+  const centers: number[][] = [z[Math.floor(rng() * z.length)].slice()];
+  const d2 = z.map((p) => sq(p, centers[0]));
+  while (centers.length < k) {
+    const total = d2.reduce((a, b) => a + b, 0);
+    if (total <= 0) break;
+    let x = rng() * total, idx = 0;
+    while (idx < z.length - 1 && (x -= d2[idx]) > 0) idx++;
+    centers.push(z[idx].slice());
+    for (let i = 0; i < z.length; i++) d2[i] = Math.min(d2[i], sq(z[i], z[idx]));
+  }
+  const assign = z.map(() => 0);
+  for (let it = 0; it < iters; it++) {
+    z.forEach((p, i) => {
+      let best = 0, bd = Infinity;
+      centers.forEach((c, j) => {
+        const d = sq(p, c);
+        if (d < bd) [bd, best] = [d, j];
+      });
+      assign[i] = best;
+    });
+    const sums = centers.map(() => new Array<number>(FEATURE_COUNT).fill(0));
+    const counts = centers.map(() => 0);
+    z.forEach((p, i) => {
+      p.forEach((x, f) => (sums[assign[i]][f] += x));
+      counts[assign[i]]++;
+    });
+    centers.forEach((_, c) => counts[c] && (centers[c] = sums[c].map((x) => x / counts[c])));
+  }
+  const picked = new Set<number>();
+  for (const c of centers) {
+    let best = -1, bd = Infinity;
+    z.forEach((p, i) => {
+      if (picked.has(i)) return;
+      const d = sq(p, c);
+      if (d < bd) [bd, best] = [d, i];
+    });
+    if (best >= 0) picked.add(best);
+  }
+  return [...picked].sort((a, b) => a - b).map((i) => vs[i]);
+}
 
 describe('KnnModel with a prior', () => {
   const own: Sample[] = [

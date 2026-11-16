@@ -4,10 +4,14 @@ import { WebSocket } from 'ws';
 import { startServer } from '../server/index.ts';
 import { RULES } from '../shared/rules.ts';
 import type { ClientMsg, DefenseState, FighterSnapshot, MatchEvent, MatchSnapshot, Punch, ServerMsg, Slot } from '../shared/types.ts';
+import { decodeSnapshot } from '../shared/wire.ts';
+
+/** Server messages with state snapshots decoded, as the client's OnlineLink sees them. */
+type Msg = Exclude<ServerMsg, { t: 'state' }> | { t: 'state'; s: MatchSnapshot; rejoinMs: number | null };
 
 interface Client {
   ws: WebSocket;
-  log: ServerMsg[];
+  log: Msg[];
   send(m: ClientMsg): void;
 }
 
@@ -23,7 +27,10 @@ let offset = 0;
 function connect(port: number): Promise<Client> {
   const ws = new WebSocket(`ws://localhost:${port}/ws`);
   const c: Client = { ws, log: [], send: (m) => ws.send(JSON.stringify(m)) };
-  ws.on('message', (d) => c.log.push(JSON.parse(String(d)) as ServerMsg));
+  ws.on('message', (d) => {
+    const m = JSON.parse(String(d)) as ServerMsg;
+    c.log.push(m.t === 'state' ? { t: 'state', s: decodeSnapshot(m.s), rejoinMs: m.r ?? null } : m);
+  });
   return new Promise((ok, fail) => {
     ws.once('open', () => ok(c));
     ws.once('error', fail);
@@ -31,7 +38,7 @@ function connect(port: number): Promise<Client> {
 }
 
 /** Resolves with the log index of the first message at or after `since` matching `pred`. */
-async function waitFor(c: Client, pred: (m: ServerMsg) => boolean, ms = 5_000, since = 0): Promise<number> {
+async function waitFor(c: Client, pred: (m: Msg) => boolean, ms = 5_000, since = 0): Promise<number> {
   const deadline = performance.now() + ms;
   for (;;) {
     for (let i = since; i < c.log.length; i++) if (pred(c.log[i])) return i;
@@ -43,12 +50,12 @@ async function waitFor(c: Client, pred: (m: ServerMsg) => boolean, ms = 5_000, s
 
 async function event(c: Client, pred: (e: MatchEvent) => boolean, ms = 5_000, since = 0) {
   const i = await waitFor(c, (m) => m.t === 'event' && pred(m.ev), ms, since);
-  return { i, ev: (c.log[i] as Extract<ServerMsg, { t: 'event' }>).ev };
+  return { i, ev: (c.log[i] as Extract<Msg, { t: 'event' }>).ev };
 }
 
 async function stateAfter(c: Client, since: number, pred: (s: MatchSnapshot) => boolean = () => true, ms = 5_000) {
   const i = await waitFor(c, (m) => m.t === 'state' && pred(m.s), ms, since + 1);
-  return (c.log[i] as Extract<ServerMsg, { t: 'state' }>).s;
+  return (c.log[i] as Extract<Msg, { t: 'state' }>).s;
 }
 
 function latest(c: Client, slot: Slot): FighterSnapshot {
@@ -107,7 +114,7 @@ test('two clients play a match to a KO over the websocket', async () => {
 
   b.send({ t: 'join', code: joined.code });
   expect(b.log[await waitFor(b, (m) => m.t === 'joined')]).toMatchObject({ slot: 1, code: joined.code });
-  const both = (m: ServerMsg) => m.t === 'lobby' && m.players.every((p) => p?.connected);
+  const both = (m: Msg) => m.t === 'lobby' && m.players.every((p) => p?.connected);
   await waitFor(a, both);
   await waitFor(b, both);
 

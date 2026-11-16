@@ -1,7 +1,7 @@
 import type { DefenseState, Hand, Punch, PunchType, Stance } from '../../../shared/types.ts';
 import { CONFIG } from '../config.ts';
 import type { Calibration } from './calibration.ts';
-import { HAND_IDX, L, angle3, dist2, dist3, mid, type Lm, type PoseFrame } from './frame.ts';
+import { HAND_IDX, L, angle3, dist2, dist3, type Lm, type PoseFrame } from './frame.ts';
 import { targetOf } from './model.ts';
 
 export interface HandFeatures {
@@ -104,7 +104,6 @@ interface Sample {
   gap: number;
   p: PathPoint;
   f: HandFeatures;
-  img: Lm;
   z: number;
   nose: P2;
   /** Head dip below neutral this frame (Features.headDy). */
@@ -120,7 +119,6 @@ interface Active {
   /** Top speed corrected for the frame gap (see gapBoost). */
   gateSpeed: number;
   maxUp: number;
-  maxElbow: number;
   stall: number;
   /** Time of the last peak already read early (each candidate peak is read once). */
   checkedPeakT: number;
@@ -153,7 +151,8 @@ export interface ClassifierOutput {
 
 interface Decision {
   punch: Punch | null;
-  why: string;
+  /** What decided it: the speed and travel gate, the learned model, or the hand-written rules. */
+  by: 'gate' | 'model' | 'rules';
 }
 
 const sideSign = (h: Hand) => (h === 'left' ? 1 : -1);
@@ -199,56 +198,28 @@ export class Classifier {
   update(raw: PoseFrame): ClassifierOutput {
     const prevT = this.smooth?.t ?? null;
     const f = this.smoothFrame(raw);
-    const swNow = dist2(f.img[L.lShoulder], f.img[L.rShoulder]) || this.cal.swImg;
+    const ls = f.img[L.lShoulder], rs = f.img[L.rShoulder];
+    const swNow = dist2(ls, rs) || this.cal.swImg;
     // Shoulder width shrinks when the torso turns into a cross; follow it slowly so punches do not rescale themselves.
     if (prevT !== null) this.sw += (swNow - this.sw) * (1 - Math.exp(-Math.max(0, f.t - prevT) / CONFIG.punch.swFollowMs));
     const sw = this.sw;
-    const neck = mid(f.img[L.lShoulder], f.img[L.rShoulder]);
-    const shoulderY = neck.y;
+    // Midpoint between the shoulders (the origin of each hand's frame).
+    const neckX = (ls.x + rs.x) / 2;
+    const shoulderY = (ls.y + rs.y) / 2;
     const nose = f.img[L.nose];
     const chinY = (nose.y + (shoulderY - nose.y) * 0.45 - shoulderY) / sw;
     const punches: ClassifierOutput['punches'] = [];
-    const feats = {} as Record<Hand, HandFeatures>;
-    const samples = {} as Record<Hand, Sample>;
     // Head offset from the neutral position, before this frame moves the neutral (punches read the dip too).
     const headDx = (nose.x - this.base.x) / this.cal.swImg;
     const headDy = (nose.y - this.base.y) / this.cal.swImg;
 
-    for (const hand of ['left', 'right'] as Hand[]) {
-      const idx = HAND_IDX[hand];
-      const st = this.hands[hand];
-      const w = f.img[idx.wrist];
-      const e = f.img[idx.elbow];
-      const wz = f.world[idx.wrist].z;
-      const s = sideSign(hand);
-      const loc = (q: Lm): P2 => ({ x: (-s * (q.x - neck.x)) / sw, y: -(q.y - neck.y) / sw });
-      const prev = st.buf.at(-1);
-      const dt = prev ? (f.t - prev.t) / 1000 : 0;
-      let vIn = 0, vUp = 0, vFwd = 0;
-      const pw = loc(w);
-      if (prev && dt > 0) {
-        vIn = (pw.x - prev.p.x) / dt;
-        vUp = (pw.y - prev.p.y) / dt;
-        vFwd = (-(wz - prev.z)) / this.cal.swWorld / dt;
-      }
-      const hf: HandFeatures = {
-        reach: dist3(f.world[idx.shoulder], f.world[idx.wrist]) / this.cal.armWorld,
-        elbow: angle3(f.world[idx.shoulder], f.world[idx.elbow], f.world[idx.wrist]),
-        zAhead: (f.world[idx.shoulder].z - wz) / this.cal.swWorld,
-        scale: dist2(w, f.img[idx.index]) / sw / this.cal.handSize[hand],
-        y: (w.y - shoulderY) / sw,
-        headDist: dist2(w, nose) / sw,
-        vFwd, vIn, vUp,
-        speed: Math.hypot(vIn, vUp),
-      };
-      feats[hand] = hf;
-      const pe = loc(e);
-      samples[hand] = { t: f.t, gap: prev ? f.t - prev.t : 0, p: { t: f.t, x: pw.x, y: pw.y, ex: pe.x, ey: pe.y, s: hf.scale }, f: hf, img: { ...w }, z: wz, nose: loc(nose), dip: headDy };
-    }
-    for (const hand of ['left', 'right'] as Hand[]) {
-      const p = this.stepHand(hand, samples[hand], chinY);
-      if (p) punches.push(p);
-    }
+    // Both samples are taken before either hand steps: a segment reads the other hand's buffer.
+    const sl = this.sample('left', f, neckX, shoulderY, sw, headDy);
+    const sr = this.sample('right', f, neckX, shoulderY, sw, headDy);
+    const pl = this.stepHand('left', sl, chinY);
+    if (pl) punches.push(pl);
+    const pr = this.stepHand('right', sr, chinY);
+    if (pr) punches.push(pr);
 
     const d = CONFIG.defense;
     const th = this.defenseThresholds;
@@ -261,18 +232,63 @@ export class Classifier {
     const gy = this.cal.guardY !== undefined ? Math.max(d.guardMaxY, this.cal.guardY + d.guardSlack) : d.guardMaxY;
     const gh = this.cal.guardHead !== undefined ? Math.max(d.guardMaxHeadDist, this.cal.guardHead + d.guardSlack) : d.guardMaxHeadDist;
     const hold = this.wasGuard ? d.guardHysteresis : 0;
-    const inGuard = (h: Hand) =>
-      this.hands[h].mode !== 'active' && feats[h].y < gy + hold && feats[h].headDist < gh + hold && feats[h].speed < d.guardMaxSpeed * (this.wasGuard ? 1.6 : 1);
-    const punching = (['left', 'right'] as Hand[]).some((h) => f.t - this.hands[h].lastMotion < d.slipAfterPunchMs);
+    const maxSpeed = d.guardMaxSpeed * (this.wasGuard ? 1.6 : 1);
+    const { left, right } = this.hands;
+    const inGuard = (st: HandState, hf: HandFeatures) => st.mode !== 'active' && hf.y < gy + hold && hf.headDist < gh + hold && hf.speed < maxSpeed;
+    const punching = f.t - left.lastMotion < d.slipAfterPunchMs || f.t - right.lastMotion < d.slipAfterPunchMs;
     const defense: DefenseState = {
-      guard: inGuard('left') && inGuard('right'),
+      guard: inGuard(left, sl.f) && inGuard(right, sr.f),
       duck: headDy > th.duck,
       slip: punching ? 'none' : headDx > th.slipLeft ? 'left' : headDx < -th.slipRight ? 'right' : 'none',
     };
     this.wasGuard = defense.guard;
-    return { punches, defense, features: { left: feats.left, right: feats.right, headDx, headDy, chinY }, last: this.lastDecision };
+    return { punches, defense, features: { left: sl.f, right: sr.f, headDx, headDy, chinY }, last: this.lastDecision };
   }
 
+  /** One hand's features and motion sample for this frame, in its own frame (see P2). */
+  private sample(hand: Hand, f: PoseFrame, neckX: number, neckY: number, sw: number, dip: number): Sample {
+    const idx = HAND_IDX[hand];
+    const buf = this.hands[hand].buf;
+    const w = f.img[idx.wrist];
+    const e = f.img[idx.elbow];
+    const nose = f.img[L.nose];
+    const ws = f.world[idx.shoulder], ww = f.world[idx.wrist];
+    const wz = ww.z;
+    const s = sideSign(hand);
+    const prev = buf.length ? buf[buf.length - 1] : undefined;
+    const dt = prev ? (f.t - prev.t) / 1000 : 0;
+    let vIn = 0, vUp = 0, vFwd = 0;
+    const x = (-s * (w.x - neckX)) / sw, y = -(w.y - neckY) / sw;
+    if (prev && dt > 0) {
+      vIn = (x - prev.p.x) / dt;
+      vUp = (y - prev.p.y) / dt;
+      vFwd = (-(wz - prev.z)) / this.cal.swWorld / dt;
+    }
+    const hf: HandFeatures = {
+      reach: dist3(ws, ww) / this.cal.armWorld,
+      elbow: angle3(ws, f.world[idx.elbow], ww),
+      zAhead: (ws.z - wz) / this.cal.swWorld,
+      scale: dist2(w, f.img[idx.index]) / sw / this.cal.handSize[hand],
+      y: (w.y - neckY) / sw,
+      headDist: dist2(w, nose) / sw,
+      vFwd, vIn, vUp,
+      speed: Math.hypot(vIn, vUp),
+    };
+    return {
+      t: f.t,
+      gap: prev ? f.t - prev.t : 0,
+      p: { t: f.t, x, y, ex: (-s * (e.x - neckX)) / sw, ey: -(e.y - neckY) / sw, s: hf.scale },
+      f: hf,
+      z: wz,
+      nose: { x: (-s * (nose.x - neckX)) / sw, y: -(nose.y - neckY) / sw },
+      dip,
+    };
+  }
+
+  /**
+   * Exponential smoothing of the raw landmarks. The smoothed frame is private to the classifier,
+   * so it is updated in place after the first frame instead of being rebuilt every frame.
+   */
   private smoothFrame(raw: PoseFrame): PoseFrame {
     const prev = this.smooth;
     if (!prev) return (this.smooth = clone(raw));
@@ -280,27 +296,32 @@ export class Classifier {
     const dt = Math.max(1, raw.t - prev.t);
     const at = (k: number) => 1 - Math.pow(1 - k, dt / (1000 / 30));
     const a = at(CONFIG.smoothing.image), b = at(CONFIG.smoothing.worldZ);
-    const mix = (p: Lm, r: Lm, k: number, kz: number): Lm => ({
-      x: p.x + (r.x - p.x) * k, y: p.y + (r.y - p.y) * k, z: p.z + (r.z - p.z) * kz, v: r.v,
-    });
-    this.smooth = {
-      t: raw.t,
-      img: raw.img.map((r, i) => mix(prev.img[i], r, a, a)),
-      world: raw.world.map((r, i) => mix(prev.world[i], r, a, b)),
-    };
-    return this.smooth;
+    if (raw.img.length !== prev.img.length || raw.world.length !== prev.world.length) {
+      const mix = (p: Lm, r: Lm, k: number, kz: number): Lm => ({
+        x: p.x + (r.x - p.x) * k, y: p.y + (r.y - p.y) * k, z: p.z + (r.z - p.z) * kz, v: r.v,
+      });
+      return (this.smooth = { t: raw.t, img: raw.img.map((r, i) => mix(prev.img[i], r, a, a)), world: raw.world.map((r, i) => mix(prev.world[i], r, a, b)) });
+    }
+    prev.t = raw.t;
+    mixInto(prev.img, raw.img, a, a);
+    mixInto(prev.world, raw.world, a, b);
+    return prev;
   }
 
   private stepHand(hand: Hand, smp: Sample, chinY: number): (Punch & { at: number }) | null {
     const c = CONFIG.punch;
     const st = this.hands[hand];
     const t = smp.t;
-    st.buf.push(smp);
-    while (st.buf.length > 2 && t - st.buf[0].t > BUF_MS) {
-      st.buf.shift();
+    const buf = st.buf;
+    buf.push(smp);
+    let drop = 0;
+    while (buf.length - drop > 2 && t - buf[drop].t > BUF_MS) drop++;
+    if (drop) {
+      if (drop === 1) buf.shift();
+      else buf.splice(0, drop);
       if (st.active) {
-        st.active.startIdx = Math.max(0, st.active.startIdx - 1);
-        st.active.peakIdx = Math.max(0, st.active.peakIdx - 1);
+        st.active.startIdx = Math.max(0, st.active.startIdx - drop);
+        st.active.peakIdx = Math.max(0, st.active.peakIdx - drop);
       }
     }
     const speed = smp.f.speed;
@@ -340,10 +361,18 @@ export class Classifier {
       const prevDist = prev ? Math.hypot(prev.p.x - st.anchor.x, prev.p.y - st.anchor.y) : 0;
       if (dist < c.startDist || dist <= prevDist) return null;
       // The motion starts at the last frame the hand was still near its rest position.
-      let i = st.buf.length - 1;
-      while (i > 0 && Math.hypot(st.buf[i - 1].p.x - st.anchor.x, st.buf[i - 1].p.y - st.anchor.y) < Math.hypot(st.buf[i].p.x - st.anchor.x, st.buf[i].p.y - st.anchor.y) && t - st.buf[i - 1].t < c.maxDurationMs) i--;
+      const ax = st.anchor.x, ay = st.anchor.y;
+      let i = buf.length - 1;
+      let di = Math.hypot(buf[i].p.x - ax, buf[i].p.y - ay);
+      while (i > 0) {
+        const q = buf[i - 1];
+        const dq = Math.hypot(q.p.x - ax, q.p.y - ay);
+        if (!(dq < di && t - q.t < c.maxDurationMs)) break;
+        i--;
+        di = dq;
+      }
       st.mode = 'active';
-      st.active = { startIdx: i, anchor: { ...st.anchor }, maxD: 0, peakIdx: i, maxSpeed: 0, gateSpeed: 0, maxUp: 0, maxElbow: 0, stall: 0, checkedPeakT: -Infinity };
+      st.active = { startIdx: i, anchor: { x: ax, y: ay }, maxD: 0, peakIdx: i, maxSpeed: 0, gateSpeed: 0, maxUp: 0, stall: 0, checkedPeakT: -Infinity };
       for (let j = i; j < st.buf.length - 1; j++) this.track(st.active, st.buf[j], j);
     }
     const a = st.active!;
@@ -398,7 +427,6 @@ export class Classifier {
     a.maxSpeed = Math.max(a.maxSpeed, s.f.speed);
     a.gateSpeed = Math.max(a.gateSpeed, s.f.speed * gapBoost(s.gap));
     a.maxUp = Math.max(a.maxUp, s.f.vUp);
-    a.maxElbow = Math.max(a.maxElbow, s.f.elbow);
   }
 
   /** Builds the segment, decides it, and moves the hand on to waiting for its return. */
@@ -414,7 +442,7 @@ export class Classifier {
     this.onSegment?.(seg);
     const r = read ?? this.decide(seg);
     const punch = r.punch;
-    this.lastDecision = `${r.why}${punch && !this.canPunch ? ' (blocked: cannot punch now)' : ''}`;
+    this.lastDecision = `${explain(seg, r)}${punch && !this.canPunch ? ' (blocked: cannot punch now)' : ''}`;
     this.onDecision?.(seg, punch, this.lastDecision);
     st.fired = !!punch && this.canPunch;
     if (!st.fired) return null;
@@ -425,19 +453,29 @@ export class Classifier {
   private segment(hand: Hand, st: HandState, a: Active, chinY: number, t: number): Segment {
     const s0 = st.buf[a.startIdx];
     const pk = st.buf[a.peakIdx];
-    const path = st.buf.slice(a.startIdx, Math.min(st.buf.length, a.peakIdx + 3)).map((x) => x.p);
+    const buf = st.buf;
+    const end = Math.min(buf.length, a.peakIdx + 3);
+    const path: PathPoint[] = [];
+    for (let i = a.startIdx; i < end; i++) path.push(buf[i].p);
     const start: PathPoint = { ...s0.p, x: a.anchor.x, y: a.anchor.y };
     path[0] = start;
     const ob = this.hands[hand === 'left' ? 'right' : 'left'].buf;
-    const o0 = ob.find((x) => x.t >= s0.t), o1 = [...ob].reverse().find((x) => x.t <= pk.t);
+    const o0 = ob.find((x) => x.t >= s0.t);
+    let o1: Sample | undefined;
+    for (let i = ob.length - 1; i >= 0; i--) {
+      if (ob[i].t <= pk.t) {
+        o1 = ob[i];
+        break;
+      }
+    }
     const other = o0 && o1 ? Math.hypot(o1.p.x - o0.p.x, o1.p.y - o0.p.y) : 0;
     const otherRise = o0 && o1 ? o1.p.y - o0.p.y : 0;
     const fwd = (s0.z - pk.z) / this.cal.swWorld;
     const w = CONFIG.straight.weights;
     let maxElbow = s0.f.elbow;
-    for (let i = a.startIdx; i < st.buf.length; i++) maxElbow = Math.max(maxElbow, st.buf[i].f.elbow);
+    for (let i = a.startIdx; i < buf.length; i++) maxElbow = Math.max(maxElbow, buf[i].f.elbow);
     let dip = -Infinity;
-    for (let i = a.startIdx; i < Math.min(st.buf.length, a.peakIdx + 3); i++) dip = Math.max(dip, st.buf[i].dip);
+    for (let i = a.startIdx; i < end; i++) dip = Math.max(dip, buf[i].dip);
     return {
       hand, startT: s0.t, peakT: pk.t, endT: t,
       dIn: pk.p.x - start.x, rise: pk.p.y - start.y, fwd,
@@ -460,20 +498,24 @@ export class Classifier {
     return f.headDist <= head && f.y <= y;
   }
 
-  /** Decides one motion (no side effects), with an explanation for ?debug=1. */
+  /** Decides one motion (no side effects); explain() words it for ?debug=1. */
   private decide(seg: Segment): Decision {
-    const fmt = (n: number) => n.toFixed(2);
-    const info = `${seg.hand} in=${fmt(seg.dIn)} rise=${fmt(seg.rise)} y=${fmt(seg.peakY)} travel=${fmt(seg.travel)} elbow=${seg.elbow.toFixed(0)} other=${fmt(seg.other)} +${(seg.endT - seg.peakT).toFixed(0)}ms`;
-    if (!passesGate(seg)) {
-      return { punch: null, why: `none (${seg.travel < CONFIG.punch.minTravel ? 'short' : bothHands(seg) ? 'both hands' : 'slow'}) ${info}` };
-    }
+    if (!passesGate(seg)) return { punch: null, by: 'gate' };
     if (this.model) {
       const m = this.model(seg);
-      if (m !== undefined) return { punch: m, why: `${m ? `${m.type} ${m.target}` : 'none'} (model) ${info}` };
+      if (m !== undefined) return { punch: m, by: 'model' };
     }
-    const r = ruleDecision(seg, this.stance, this.bodyDip);
-    return { punch: r, why: `${r ? `${r.type} ${r.target}` : 'none'} ${info}` };
+    return { punch: ruleDecision(seg, this.stance, this.bodyDip), by: 'rules' };
   }
+}
+
+/** The explanation of a decision. Only built for decisions that are kept (an early read that is not a punch is dropped). */
+function explain(seg: Segment, r: Decision): string {
+  const fmt = (n: number) => n.toFixed(2);
+  const info = `${seg.hand} in=${fmt(seg.dIn)} rise=${fmt(seg.rise)} y=${fmt(seg.peakY)} travel=${fmt(seg.travel)} elbow=${seg.elbow.toFixed(0)} other=${fmt(seg.other)} +${(seg.endT - seg.peakT).toFixed(0)}ms`;
+  if (r.by === 'gate') return `none (${seg.travel < CONFIG.punch.minTravel ? 'short' : bothHands(seg) ? 'both hands' : 'slow'}) ${info}`;
+  const p = r.punch;
+  return `${p ? `${p.type} ${p.target}` : 'none'}${r.by === 'model' ? ' (model)' : ''} ${info}`;
 }
 
 /** Camera-independent punch gate: the hand travelled far enough, fast enough, and on its own. */
@@ -482,13 +524,13 @@ export function passesGate(seg: Segment): boolean {
 }
 
 /** Both hands rising or dropping together (raising the guard, dropping the hands) is not a punch. */
-export function bothHands(seg: Segment): boolean {
+function bothHands(seg: Segment): boolean {
   const c = CONFIG.punch;
   return Math.abs(seg.rise) > c.bothHandsVertical * Math.abs(seg.dIn) && Math.sign(seg.rise) === Math.sign(seg.otherRise) && Math.abs(seg.otherRise) >= c.bothHandsFraction * Math.abs(seg.rise);
 }
 
 /** The hand-written rules (used without a taught profile): decides a punch from one motion segment, or null. */
-export function ruleDecision(seg: Segment, stance: Stance, bodyDip: number = CONFIG.punch.bodyDip): Punch | null {
+function ruleDecision(seg: Segment, stance: Stance, bodyDip: number = CONFIG.punch.bodyDip): Punch | null {
   if (!passesGate(seg)) return null;
   const { hand } = seg;
   const u = CONFIG.uppercut;
@@ -510,13 +552,24 @@ export function ruleDecision(seg: Segment, stance: Stance, bodyDip: number = CON
  * Speed is measured between frames, so with long frame gaps it averages over more of the punch and
  * reads low. Scales it back up for gaps past the rate the gate was tuned at (about 25 fps).
  */
-export function gapBoost(gapMs: number): number {
+function gapBoost(gapMs: number): number {
   const c = CONFIG.punch;
   return 1 / Math.max(c.gapBoostMin, 1 - Math.max(0, gapMs - c.gapBoostFromMs) / c.gapBoostSpanMs);
 }
 
 function newHand(): HandState {
   return { mode: 'ready', anchor: null, buf: [], active: null, lastMax: 0, lastDir: { x: 0, y: 1 }, lastFire: -Infinity, lastMotion: -Infinity, lastIgnored: -Infinity, stillSince: Infinity, fired: false };
+}
+
+/** p += (r - p) * k per landmark (z by kz), v taken from r. */
+function mixInto(prev: Lm[], raw: Lm[], k: number, kz: number): void {
+  for (let i = 0; i < raw.length; i++) {
+    const p = prev[i], r = raw[i];
+    p.x = p.x + (r.x - p.x) * k;
+    p.y = p.y + (r.y - p.y) * k;
+    p.z = p.z + (r.z - p.z) * kz;
+    p.v = r.v;
+  }
 }
 
 function clone(f: PoseFrame): PoseFrame {

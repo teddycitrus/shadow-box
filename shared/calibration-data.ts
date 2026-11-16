@@ -171,35 +171,53 @@ function stats(vs: number[][]): { mean: number[]; std: number[] } {
   return { mean, std: std.map(Math.sqrt) };
 }
 
-function sq(a: number[], b: number[]): number {
+/** Squared distance between rows a and b of flat arrays (FEATURE_COUNT numbers per row). */
+function sq(x: Float64Array, a: number, y: Float64Array, b: number): number {
+  const ao = a * FEATURE_COUNT, bo = b * FEATURE_COUNT;
   let s = 0;
-  for (let i = 0; i < a.length; i++) s += (a[i] - b[i]) ** 2;
+  for (let i = 0; i < FEATURE_COUNT; i++) {
+    const d = x[ao + i] - y[bo + i];
+    s += d * d;
+  }
   return s;
 }
 
 /**
  * Picks k real samples that cover the set: k-means++ seeding and a few Lloyd iterations on
- * standardized features, then the member nearest each centre.
+ * standardized features, then the member nearest each centre. Works on flat typed arrays, so a
+ * rebuild allocates a few buffers instead of thousands of small arrays.
  */
 export function representatives(vs: number[][], k: number, scale: number[], rng: () => number, iters = 4): number[][] {
   if (vs.length <= k) return vs;
-  const z = vs.map((v) => v.map((x, i) => x / (scale[i] || 1)));
-  const centers: number[][] = [z[Math.floor(rng() * z.length)].slice()];
-  const d2 = z.map((p) => sq(p, centers[0]));
-  while (centers.length < k) {
-    const total = d2.reduce((a, b) => a + b, 0);
+  const n = vs.length, F = FEATURE_COUNT;
+  const z = new Float64Array(n * F);
+  for (let i = 0; i < n; i++) for (let f = 0; f < F; f++) z[i * F + f] = vs[i][f] / (scale[f] || 1);
+  const centers = new Float64Array(k * F);
+  let nc = 0;
+  const addCenter = (i: number) => {
+    centers.set(z.subarray(i * F, i * F + F), nc * F);
+    nc++;
+  };
+  addCenter(Math.floor(rng() * n));
+  const d2 = new Float64Array(n);
+  for (let i = 0; i < n; i++) d2[i] = sq(z, i, centers, 0);
+  while (nc < k) {
+    let total = 0;
+    for (let i = 0; i < n; i++) total += d2[i];
     if (total <= 0) break;
     let r = rng() * total, idx = 0;
-    while (idx < z.length - 1 && (r -= d2[idx]) > 0) idx++;
-    centers.push(z[idx].slice());
-    for (let i = 0; i < z.length; i++) d2[i] = Math.min(d2[i], sq(z[i], z[idx]));
+    while (idx < n - 1 && (r -= d2[idx]) > 0) idx++;
+    addCenter(idx);
+    for (let i = 0; i < n; i++) d2[i] = Math.min(d2[i], sq(z, i, z, idx));
   }
-  const assign = new Array<number>(z.length).fill(0);
+  const assign = new Int32Array(n);
+  const sums = new Float64Array(nc * F);
+  const counts = new Int32Array(nc);
   for (let it = 0; it < iters; it++) {
-    for (let i = 0; i < z.length; i++) {
+    for (let i = 0; i < n; i++) {
       let best = 0, bd = Infinity;
-      for (let c = 0; c < centers.length; c++) {
-        const d = sq(z[i], centers[c]);
+      for (let c = 0; c < nc; c++) {
+        const d = sq(z, i, centers, c);
         if (d < bd) {
           bd = d;
           best = c;
@@ -207,21 +225,21 @@ export function representatives(vs: number[][], k: number, scale: number[], rng:
       }
       assign[i] = best;
     }
-    const sums = centers.map(() => new Array<number>(FEATURE_COUNT).fill(0));
-    const counts = new Array<number>(centers.length).fill(0);
-    for (let i = 0; i < z.length; i++) {
-      const s = sums[assign[i]];
-      for (let f = 0; f < FEATURE_COUNT; f++) s[f] += z[i][f];
+    sums.fill(0);
+    counts.fill(0);
+    for (let i = 0; i < n; i++) {
+      const so = assign[i] * F;
+      for (let f = 0; f < F; f++) sums[so + f] += z[i * F + f];
       counts[assign[i]]++;
     }
-    for (let c = 0; c < centers.length; c++) if (counts[c]) centers[c] = sums[c].map((x) => x / counts[c]);
+    for (let c = 0; c < nc; c++) if (counts[c]) for (let f = 0; f < F; f++) centers[c * F + f] = sums[c * F + f] / counts[c];
   }
   const picked = new Set<number>();
-  for (const c of centers) {
+  for (let c = 0; c < nc; c++) {
     let best = -1, bd = Infinity;
-    for (let i = 0; i < z.length; i++) {
+    for (let i = 0; i < n; i++) {
       if (picked.has(i)) continue;
-      const d = sq(z[i], c);
+      const d = sq(z, i, centers, c);
       if (d < bd) {
         bd = d;
         best = i;

@@ -15,7 +15,7 @@ export interface UploadMeta {
   model: 'full' | 'lite';
 }
 
-export function toUpload(profile: Profile, meta: UploadMeta): CalibrationUpload {
+function toUpload(profile: Profile, meta: UploadMeta): CalibrationUpload {
   const r = (x: number) => Math.round(x * 1e4) / 1e4;
   return {
     version: DATA_VERSION,

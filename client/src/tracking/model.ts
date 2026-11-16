@@ -15,7 +15,7 @@ export function kindOf(type: PunchType): Kind {
 }
 
 
-export function punchOf(kind: Kind, hand: Hand, stance: Stance): PunchType {
+function punchOf(kind: Kind, hand: Hand, stance: Stance): PunchType {
   if (kind === 'straight') return hand === (stance === 'orthodox' ? 'left' : 'right') ? 'jab' : 'cross';
   return `${hand}${kind === 'hook' ? 'Hook' : 'Uppercut'}` as PunchType;
 }
@@ -69,15 +69,12 @@ function along(path: PathPoint[], k: number): { x: number; y: number } {
   return { x: path.at(-1)!.x, y: path.at(-1)!.y };
 }
 
-export const FEATURES = [
-  'dx', 'dy', 'peakNoseX', 'peakNoseY', 'forearmX', 'forearmY', 'elbowDx', 'elbowDy', 'scale',
-  'bendX', 'bendY', 'windBack', 'duration', 'other', 'startNoseX', 'startNoseY', 'headDrop',
-] as const;
-
 /**
  * Per-segment feature vector, all in the hand's own on-screen frame (sw units, x toward the body
  * midline, y up), so both hands share one frame. World depth and the 3D elbow angle are left out:
- * MediaPipe gets them wrong too often on fast punches.
+ * MediaPipe gets them wrong too often on fast punches. Layout (FEATURE_COUNT entries): dx, dy,
+ * peakNoseX, peakNoseY, forearmX, forearmY, elbowDx, elbowDy, scale, bendX, bendY, windBack,
+ * duration, other, startNoseX, startNoseY, headDrop.
  */
 export function vector(s: Segment): number[] {
   const st = s.start, pk = s.peak;
@@ -103,14 +100,8 @@ export function vector(s: Segment): number[] {
   ];
 }
 
-/** Relative feature weights after standardizing (tuned on the recorded data, see scripts/eval-calibration.ts). */
-export let WEIGHTS: number[] = FEATURES.map(() => 1);
-export function setWeights(w: number[]): void {
-  WEIGHTS = w;
-}
-
 /** Prior samples count less than the player's own: their distances are scaled up by this. */
-export const PRIOR_PENALTY = 1.3;
+const PRIOR_PENALTY = 1.3;
 
 export interface Prediction {
   label: Label;
@@ -118,9 +109,16 @@ export interface Prediction {
   dist: Partial<Record<Label, number>>;
 }
 
+/** A training sample as matched: its standardized vector, and whether it is a prior sample. */
+interface Ref {
+  label: Label;
+  v: number[];
+  prior: boolean;
+}
+
 /**
- * Per-player k-nearest-neighbours over standardized, weighted segment features, trained by the
- * guided calibration. Few examples per move, so a lazy learner beats anything with weights.
+ * Per-player k-nearest-neighbours over standardized segment features, trained by the guided
+ * calibration. Few examples per move, so a lazy learner beats anything with weights.
  */
 export class KnnModel {
   private mean: number[] = [];
@@ -128,9 +126,14 @@ export class KnnModel {
   private data: Sample[];
   /** Motions further than this from every taught punch are rejected as non-punches. */
   readonly radius: number;
-
-  /** Population prior samples, normalized like the player's own and matched at PRIOR_PENALTY times their distance. */
-  private prior: Sample[] = [];
+  /**
+   * Per hand, everything a motion is matched against: the player's own samples, then the
+   * population prior's (normalized like the player's own and matched at PRIOR_PENALTY times
+   * their distance), each in the order given.
+   */
+  private refs = new Map<Hand, Ref[]>();
+  /** Scratch distances, reused across predictions. */
+  private dist = new Float64Array(0);
 
   constructor(samples: Sample[], private k: number = CONFIG.model.k, rejectScale: number = CONFIG.model.rejectScale, prior: Sample[] = []) {
     const n = samples[0]?.v.length ?? 0;
@@ -143,31 +146,69 @@ export class KnnModel {
       this.std.push(sd);
     }
     this.data = samples.map((s) => ({ ...s, v: this.norm(s.v) }));
-    if (n) this.prior = prior.filter((s) => s.v.length === n).map((s) => ({ ...s, v: this.norm(s.v) }));
-    const nn = this.data
-      .filter((s) => s.label !== 'none')
-      .map((s) => Math.min(...this.data.filter((o) => o !== s && o.hand === s.hand && o.label === s.label).map((o) => dist(o.v, s.v))))
-      .filter(Number.isFinite)
-      .sort((a, b) => a - b);
+    const add = (hand: Hand, r: Ref) => {
+      const list = this.refs.get(hand);
+      if (list) list.push(r);
+      else this.refs.set(hand, [r]);
+    };
+    for (const s of this.data) add(s.hand, { label: s.label, v: s.v, prior: false });
+    if (n) for (const s of prior) if (s.v.length === n) add(s.hand, { label: s.label, v: this.norm(s.v), prior: true });
+    const nn: number[] = [];
+    for (const s of this.data) {
+      if (s.label === 'none') continue;
+      let m = Infinity;
+      for (const o of this.data) if (o !== s && o.hand === s.hand && o.label === s.label) m = Math.min(m, dist(o.v, s.v));
+      if (Number.isFinite(m)) nn.push(m);
+    }
+    nn.sort((a, b) => a - b);
     this.radius = nn.length ? Math.max(CONFIG.model.minRadius, nn[Math.floor(nn.length / 2)] * rejectScale) : Infinity;
   }
 
   private norm(v: number[]): number[] {
-    return v.map((x, i) => ((x - this.mean[i]) / this.std[i]) * (WEIGHTS[i] ?? 1));
+    return v.map((x, i) => (x - this.mean[i]) / this.std[i]);
   }
 
   predict(hand: Hand, raw: number[]): Prediction {
     const v = this.norm(raw);
-    const near = this.data
-      .filter((s) => s.hand === hand)
-      .map((s) => ({ s, d: dist(s.v, v) }))
-      .concat(this.prior.filter((s) => s.hand === hand).map((s) => ({ s, d: dist(s.v, v) * PRIOR_PENALTY })))
-      .sort((a, b) => a.d - b.d);
+    const refs = this.refs.get(hand) ?? [];
+    const n = refs.length;
     const nearest: Prediction['dist'] = {};
-    for (const { s, d } of near) if (nearest[s.label] === undefined) nearest[s.label] = d;
-    if (!near.length) return { label: 'none', dist: nearest };
+    if (!n) return { label: 'none', dist: nearest };
+    if (this.dist.length < n) this.dist = new Float64Array(n);
+    const d = this.dist;
+    let finite = true;
+    for (let i = 0; i < n; i++) {
+      const r = refs[i];
+      d[i] = r.prior ? dist(r.v, v) * PRIOR_PENALTY : dist(r.v, v);
+      if (!Number.isFinite(d[i])) finite = false;
+    }
+    // The k nearest, nearest first (ties in sample order, as a stable sort would leave them).
+    let top: number[];
+    if (finite && Number.isInteger(this.k) && this.k >= 1) {
+      top = nearestK(d, n, this.k);
+      // Nearest distance per label, keyed in the order the labels first appear by distance.
+      const labels: Label[] = [], min: number[] = [], first: number[] = [];
+      for (let i = 0; i < n; i++) {
+        const j = labels.indexOf(refs[i].label);
+        if (j < 0) {
+          labels.push(refs[i].label);
+          min.push(d[i]);
+          first.push(i);
+        } else if (d[i] < min[j]) {
+          min[j] = d[i];
+          first[j] = i;
+        }
+      }
+      const byDist = labels.map((_, j) => j).sort((a, b) => min[a] - min[b] || first[a] - first[b]);
+      for (const j of byDist) nearest[labels[j]] = min[j];
+    } else {
+      // Non-finite distances or an unusual k: sort everything, exactly as a full ranking would.
+      const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => d[a] - d[b]);
+      for (const i of order) if (nearest[refs[i].label] === undefined) nearest[refs[i].label] = d[i];
+      top = order.slice(0, this.k);
+    }
     const score = new Map<Label, number>();
-    for (const { s, d } of near.slice(0, this.k)) score.set(s.label, (score.get(s.label) ?? 0) + 1 / (d + 0.3));
+    for (const i of top) score.set(refs[i].label, (score.get(refs[i].label) ?? 0) + 1 / (d[i] + 0.3));
     let best = [...score.entries()].sort((a, b) => b[1] - a[1])[0][0];
     if (best !== 'none' && nearest[best]! > this.radius) best = 'none';
     return { label: best, dist: nearest };
@@ -181,11 +222,11 @@ export class KnnModel {
   shadowing(hand: Hand, raw: number[], label: Label): number[] {
     const v = this.norm(raw);
     const d = this.data.map((s) => (s.hand === hand ? dist(s.v, v) : Infinity));
-    const own = Math.min(...this.data.map((s, i) => (s.label === label ? d[i] : Infinity)));
-    return this.data
-      .flatMap((s, i) => (s.label === 'none' && d[i] < own ? [i] : []))
-      .sort((a, b) => d[a] - d[b])
-      .slice(0, CONFIG.model.maxShadowDrop);
+    let own = Infinity;
+    for (let i = 0; i < d.length; i++) if (this.data[i].label === label) own = Math.min(own, d[i]);
+    const out: number[] = [];
+    for (let i = 0; i < d.length; i++) if (this.data[i].label === 'none' && d[i] < own) out.push(i);
+    return out.sort((a, b) => d[a] - d[b]).slice(0, CONFIG.model.maxShadowDrop);
   }
 
   /** Classifier hook: a punch, or null for a non-punch. */
@@ -205,6 +246,25 @@ export function confident(p: Prediction): Label {
   if (label !== 'hook' && label !== 'uppercut') return label;
   const straight = d.straight ?? Infinity;
   return straight <= d[label]! * CONFIG.model.straightMargin ? 'straight' : label;
+}
+
+/**
+ * Indices of the k smallest of d[0..n), smallest first, ties in index order (what a stable sort
+ * of all n would put first). All values must be finite.
+ */
+function nearestK(d: Float64Array, n: number, k: number): number[] {
+  const top: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const x = d[i];
+    if (top.length === k && !(x < d[top[k - 1]])) continue;
+    let p = top.length === k ? k - 1 : top.length;
+    while (p > 0 && d[top[p - 1]] > x) {
+      top[p] = top[p - 1];
+      p--;
+    }
+    top[p] = i;
+  }
+  return top;
 }
 
 function dist(a: number[], b: number[]): number {

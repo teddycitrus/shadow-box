@@ -28,7 +28,7 @@ export class Session {
     }
     const conn = this.conn;
     if (m.t === 'ping') {
-      conn.send({ t: 'pong', c: m.c, s: this.now() });
+      conn.send({ t: 'pong', c: m.c, s: Math.round(this.now()) });
       return;
     }
     if (!this.room) {

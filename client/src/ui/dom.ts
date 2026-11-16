@@ -7,6 +7,16 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<s
   return el;
 }
 
+/** Sets textContent only when it differs, so per-frame updates do not dirty layout for nothing. */
+export function setText(el: HTMLElement, text: string): void {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+/** Sets style.width only when it differs. */
+export function setWidth(el: HTMLElement, width: string): void {
+  if (el.style.width !== width) el.style.width = width;
+}
+
 export function button(label: string, onClick: () => void, cls = ''): HTMLButtonElement {
   const b = h('button', { class: `btn ${cls}`.trim(), type: 'button' }, label);
   b.addEventListener('click', onClick);

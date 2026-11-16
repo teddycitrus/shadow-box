@@ -15,10 +15,10 @@ export interface TeachStep {
   target?: Target;
 }
 
-export const DEFENSE_STEP_MS = 3_500;
+const DEFENSE_STEP_MS = 3_500;
 export const REST_STEP_MS = 6_000;
 
-export function teachSteps(): TeachStep[] {
+function teachSteps(): TeachStep[] {
   const reps = CONFIG.model.repsPerMove;
   const p = (type: PunchType, target: Target, prompt: string): TeachStep => ({
     id: `${type}-${target}`, prompt, kind: 'punch', type, target,
@@ -384,7 +384,7 @@ function punchName(p: Punch): string {
 }
 
 /** Verify feedback on a wrong read; a right punch at the wrong target says whether to stand or crouch. */
-export function readAs(p: Punch, asked: TeachStep): string {
+function readAs(p: Punch, asked: TeachStep): string {
   if (p.type !== asked.type) return `Read as ${punchName(p)}`;
   return p.target === 'body' ? 'Read as body. Stand tall for a head shot' : 'Read as head. Crouch lower for a body shot';
 }
@@ -421,7 +421,7 @@ export function pickReps(segs: Segment[], hand: Hand, n: number): { reps: Segmen
 }
 
 /** The punch in one attempt: the last motion travelling at least attemptRepFraction of the biggest. */
-export function attemptRep(g: Segment[]): Segment {
+function attemptRep(g: Segment[]): Segment {
   const max = Math.max(...g.map((s) => s.travel));
   return [...g].reverse().find((s) => s.travel >= max * CONFIG.model.attemptRepFraction)!;
 }

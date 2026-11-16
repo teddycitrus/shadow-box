@@ -15,6 +15,10 @@ export type HitFxHook = (kind: SparkKind) => void;
 
 const QUAD = new THREE.PlaneGeometry(1, 1);
 const MAX_BURSTS = 12;
+/** Most billboard layers any kind uses (heavy hits). */
+const MAX_LAYERS = 4;
+/** Most streaks any kind uses (heavy hits). */
+const MAX_STREAKS = 16;
 
 const STREAK_VERT = /* glsl */ `
   uniform float uT;
@@ -47,33 +51,51 @@ const STREAK_FRAG = /* glsl */ `
     #include <colorspace_fragment>
   }`;
 
-function streakGeometry(n: number, len: number): THREE.BufferGeometry {
-  const dir = new Float32Array(n * 4 * 2);
+/** Streak quads for up to MAX_STREAKS rays; only the first n are drawn, via the draw range. */
+function streakGeometry(): THREE.BufferGeometry {
+  const n = MAX_STREAKS;
   const along = new Float32Array(n * 4);
   const side = new Float32Array(n * 4);
-  const lens = new Float32Array(n * 4);
   const idx: number[] = [];
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI / n);
-    const l = len * (0.55 + Math.random() * 0.6);
     for (let v = 0; v < 4; v++) {
       const k = i * 4 + v;
-      dir.set([Math.cos(a), Math.sin(a)], k * 2);
       along[k] = v < 2 ? 0 : 1;
       side[k] = v % 2 === 0 ? -1 : 1;
-      lens[k] = l;
     }
     const b = i * 4;
     idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 4 * 3), 3));
-  g.setAttribute('aDir', new THREE.BufferAttribute(dir, 2));
+  g.setAttribute('aDir', new THREE.BufferAttribute(new Float32Array(n * 4 * 2), 2));
   g.setAttribute('aAlong', new THREE.BufferAttribute(along, 1));
   g.setAttribute('aSide', new THREE.BufferAttribute(side, 1));
-  g.setAttribute('aLen', new THREE.BufferAttribute(lens, 1));
+  g.setAttribute('aLen', new THREE.BufferAttribute(new Float32Array(n * 4), 1));
   g.setIndex(idx);
   return g;
+}
+
+/** Fills the first n streaks with fresh random directions and lengths. */
+function fillStreaks(g: THREE.BufferGeometry, n: number, len: number): void {
+  const dir = g.getAttribute('aDir') as THREE.BufferAttribute;
+  const lens = g.getAttribute('aLen') as THREE.BufferAttribute;
+  const d = dir.array as Float32Array;
+  const l4 = lens.array as Float32Array;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI / n);
+    const l = len * (0.55 + Math.random() * 0.6);
+    const c = Math.cos(a), s = Math.sin(a);
+    for (let v = 0; v < 4; v++) {
+      const k = i * 4 + v;
+      d[k * 2] = c;
+      d[k * 2 + 1] = s;
+      l4[k] = l;
+    }
+  }
+  dir.needsUpdate = true;
+  lens.needsUpdate = true;
+  g.setDrawRange(0, n * 6);
 }
 
 interface Layer {
@@ -85,17 +107,38 @@ interface Layer {
   spin: number;
 }
 
+/** One reusable spark effect. Pooled so hits do not create and free GPU buffers and materials. */
 interface Burst {
   group: THREE.Group;
-  layers: Layer[];
+  slots: Layer[];
+  /** Number of slots in use for the current spawn. */
+  used: number;
   streak: THREE.ShaderMaterial;
+  streakGeo: THREE.BufferGeometry;
   pts: THREE.Points;
+  pmat: THREE.PointsMaterial;
   vel: Float32Array;
+  /** Particles in use for the current spawn. */
+  count: number;
   age: number;
   life: number;
 }
 
 const easeOut = (t: number) => 1 - (1 - t) * (1 - t) * (1 - t);
+const noSize = () => 0;
+const WHITE = new THREE.Color(1, 1, 1);
+const BLOCK_TINT = new THREE.Color(0x9fd0ff);
+const HIT_STAR = new THREE.Color(0xff8a10);
+const tint = new THREE.Color();
+const starTint = new THREE.Color();
+const dirV = new THREE.Vector3();
+
+function particleGeometry(cap: number): THREE.BufferGeometry {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(cap * 3), 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(cap * 3), 3));
+  return geo;
+}
 
 /**
  * Fighting-game impact sparks: a bright starburst and core flash, a shock ring, radiating
@@ -106,6 +149,50 @@ export class Sparks {
   /** When true, spawning also asks the owning Stage for a small camera kick / flash. */
   autoFx = true;
   private bursts: Burst[] = [];
+  private free: Burst[] = [];
+
+  private makeBurst(): Burst {
+    const group = new THREE.Group();
+    const slots: Layer[] = [];
+    for (let i = 0; i < MAX_LAYERS; i++) {
+      const mat = billboardMaterial(glowTexture(), 0xffffff);
+      const mesh = new THREE.Mesh(QUAD, mat);
+      mesh.frustumCulled = false;
+      mesh.matrixAutoUpdate = false;
+      group.add(mesh);
+      slots.push({ mesh, mat, size: noSize, alpha: noSize, spin: 0 });
+    }
+    const streak = new THREE.ShaderMaterial({
+      uniforms: {
+        uT: { value: 0 },
+        uScale: { value: 1 },
+        uOpacity: { value: 1 },
+        uColor: { value: new THREE.Color() },
+      },
+      vertexShader: STREAK_VERT,
+      fragmentShader: STREAK_FRAG,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const streakGeo = streakGeometry();
+    const streaks = new THREE.Mesh(streakGeo, streak);
+    streaks.frustumCulled = false;
+    streaks.renderOrder = 19;
+    streaks.matrixAutoUpdate = false;
+    group.add(streaks);
+    const pmat = new THREE.PointsMaterial({
+      size: 0.055, map: glowTexture(), vertexColors: true, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const pts = new THREE.Points(particleGeometry(0), pmat);
+    pts.frustumCulled = false;
+    pts.renderOrder = 18;
+    pts.matrixAutoUpdate = false;
+    group.add(pts);
+    return { group, slots, used: 0, streak, streakGeo, pts, pmat, vel: new Float32Array(0), count: 0, age: 0, life: 1 };
+  }
 
   spawn(at: THREE.Vector3, color = 0xffd27a, count = 40, opts: SparkOptions = {}): void {
     const c = new THREE.Color(color);
@@ -114,19 +201,22 @@ export class Sparks {
     const block = kind === 'block';
     const S = (heavy ? 1.55 : block ? 0.8 : 1) * (opts.scale ?? 1);
     const life = heavy ? 0.5 : block ? 0.3 : 0.36;
-    const group = new THREE.Group();
-    group.position.copy(at);
-    const layers: Layer[] = [];
+    const b = this.free.pop() ?? this.makeBurst();
+    b.group.position.copy(at);
+    b.used = 0;
+    b.age = 0;
+    b.life = life;
     const rot0 = Math.random() * Math.PI * 2;
     const add = (map: THREE.Texture, col: THREE.ColorRepresentation, size: Layer['size'], alpha: Layer['alpha'], spin = 0, order = 0) => {
-      const mat = billboardMaterial(map, 0xffffff);
-      mat.uniforms.uColor.value.set(col);
-      mat.uniforms.uRot.value = rot0 + (order % 2) * 0.5;
-      const mesh = new THREE.Mesh(QUAD, mat);
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 20 + order;
-      group.add(mesh);
-      layers.push({ mesh, mat, size, alpha, spin });
+      const l = b.slots[b.used++];
+      l.mat.uniforms.uMap.value = map;
+      l.mat.uniforms.uColor.value.set(col);
+      l.mat.uniforms.uRot.value = rot0 + (order % 2) * 0.5;
+      l.mesh.renderOrder = 20 + order;
+      l.mesh.visible = true;
+      l.size = size;
+      l.alpha = alpha;
+      l.spin = spin;
     };
 
     if (block) {
@@ -137,59 +227,48 @@ export class Sparks {
       if (heavy) {
         add(starburstTexture(), 0xff3d12, (t) => S * (0.7 + 0.45 * easeOut(Math.min(1, t * 3.5))), (t) => 1 - THREE.MathUtils.smoothstep(t, 0.15, 0.6), -0.8, 0);
       }
-      add(starburstTexture(), heavy ? 0xffb020 : c.clone().lerp(new THREE.Color(0xff8a10), 0.55), (t) => S * (0.42 + 0.3 * easeOut(Math.min(1, t * 4))), (t) => 1 - THREE.MathUtils.smoothstep(t, 0.1, 0.55), 0.9, 1);
+      add(starburstTexture(), heavy ? 0xffb020 : starTint.copy(c).lerp(HIT_STAR, 0.55), (t) => S * (0.42 + 0.3 * easeOut(Math.min(1, t * 4))), (t) => 1 - THREE.MathUtils.smoothstep(t, 0.1, 0.55), 0.9, 1);
       add(glowTexture(), 0xffffff, (t) => S * 0.26 * (1.2 - t), (t) => Math.max(0, 1 - t * 2.6), 0, 2);
       add(ringTexture(), heavy ? 0xffe2a0 : 0xfff0c8, (t) => S * (0.15 + 1.1 * easeOut(t)), (t) => 0.9 * Math.pow(1 - t, 3), 0, 3);
     }
+    for (let i = b.used; i < MAX_LAYERS; i++) b.slots[i].mesh.visible = false;
 
-    const streak = new THREE.ShaderMaterial({
-      uniforms: {
-        uT: { value: 0 },
-        uScale: { value: S },
-        uOpacity: { value: 1 },
-        uColor: { value: new THREE.Color(block ? 0x8fc4ff : heavy ? 0xffa030 : color) },
-      },
-      vertexShader: STREAK_VERT,
-      fragmentShader: STREAK_FRAG,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false,
-      blending: THREE.AdditiveBlending,
-    });
-    const streaks = new THREE.Mesh(streakGeometry(heavy ? 16 : block ? 7 : 11, block ? 0.32 : 0.5), streak);
-    streaks.frustumCulled = false;
-    streaks.renderOrder = 19;
-    group.add(streaks);
+    b.streak.uniforms.uScale.value = S;
+    b.streak.uniforms.uColor.value.set(block ? 0x8fc4ff : heavy ? 0xffa030 : color);
+    fillStreaks(b.streakGeo, heavy ? 16 : block ? 7 : 11, block ? 0.32 : 0.5);
 
     const n = Math.round(count * (heavy ? 1.6 : 1));
-    const pos = new Float32Array(n * 3);
-    const vel = new Float32Array(n * 3);
-    const col = new Float32Array(n * 3);
-    const white = new THREE.Color(1, 1, 1);
-    const tint = new THREE.Color();
-    const v = new THREE.Vector3();
-    for (let i = 0; i < n; i++) {
-      v.randomDirection().multiplyScalar((2 + Math.random() * 4.5) * (heavy ? 1.3 : block ? 0.6 : 1));
-      vel.set([v.x, v.y, v.z], i * 3);
-      tint.copy(block ? new THREE.Color(0x9fd0ff) : c).lerp(white, Math.random() * 0.6);
-      col.set([tint.r, tint.g, tint.b], i * 3);
+    let geo = b.pts.geometry;
+    if ((geo.getAttribute('position') as THREE.BufferAttribute).count < n) {
+      geo.dispose();
+      geo = b.pts.geometry = particleGeometry(Math.max(n, 72));
+      b.vel = new Float32Array(Math.max(n, 72) * 3);
     }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    const pmat = new THREE.PointsMaterial({
-      size: heavy ? 0.075 : 0.055, map: glowTexture(), vertexColors: true, transparent: true,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    const pts = new THREE.Points(geo, pmat);
-    pts.frustumCulled = false;
-    pts.renderOrder = 18;
-    group.add(pts);
+    const posA = geo.getAttribute('position') as THREE.BufferAttribute;
+    const colA = geo.getAttribute('color') as THREE.BufferAttribute;
+    const pos = posA.array as Float32Array;
+    const col = colA.array as Float32Array;
+    const vel = b.vel;
+    pos.fill(0, 0, n * 3);
+    for (let i = 0; i < n; i++) {
+      dirV.randomDirection().multiplyScalar((2 + Math.random() * 4.5) * (heavy ? 1.3 : block ? 0.6 : 1));
+      vel[i * 3] = dirV.x;
+      vel[i * 3 + 1] = dirV.y;
+      vel[i * 3 + 2] = dirV.z;
+      tint.copy(block ? BLOCK_TINT : c).lerp(WHITE, Math.random() * 0.6);
+      col[i * 3] = tint.r;
+      col[i * 3 + 1] = tint.g;
+      col[i * 3 + 2] = tint.b;
+    }
+    colA.needsUpdate = true;
+    geo.setDrawRange(0, n);
+    b.count = n;
+    b.pmat.size = heavy ? 0.075 : 0.055;
 
-    this.object.add(group);
-    this.bursts.push({ group, layers, streak, pts, vel, age: 0, life });
+    this.object.add(b.group);
+    this.bursts.push(b);
     while (this.bursts.length > MAX_BURSTS) this.remove(this.bursts.shift()!);
-    this.apply(this.bursts[this.bursts.length - 1], 0);
+    this.apply(b, 0);
 
     if (this.autoFx) {
       let root: THREE.Object3D = this.object;
@@ -199,43 +278,51 @@ export class Sparks {
   }
 
   update(dt: number): void {
-    for (const b of this.bursts) {
+    const list = this.bursts;
+    for (const b of list) {
       b.age += dt;
       this.apply(b, dt);
     }
-    for (const b of this.bursts) if (b.age >= b.life) this.remove(b);
-    this.bursts = this.bursts.filter((b) => b.age < b.life);
+    let keep = 0;
+    for (const b of list) {
+      if (b.age >= b.life) this.remove(b);
+      else list[keep++] = b;
+    }
+    list.length = keep;
   }
 
   private apply(b: Burst, dt: number): void {
     const t = Math.min(1, b.age / b.life);
-    for (const l of b.layers) {
+    for (let i = 0; i < b.used; i++) {
+      const l = b.slots[i];
       l.mat.uniforms.uScale.value = l.size(t);
       l.mat.uniforms.uOpacity.value = Math.max(0, l.alpha(t));
       l.mat.uniforms.uRot.value += l.spin * dt;
     }
     b.streak.uniforms.uT.value = easeOut(t);
     b.streak.uniforms.uOpacity.value = Math.max(0, 1 - Math.pow(t, 1.4));
-    const pos = b.pts.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const posA = b.pts.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const pos = posA.array as Float32Array;
+    const vel = b.vel;
     const drag = Math.exp(-dt * 4);
-    for (let i = 0; i < pos.count; i++) {
+    for (let i = 0; i < b.count; i++) {
       const k = i * 3;
-      b.vel[k] *= drag;
-      b.vel[k + 1] = b.vel[k + 1] * drag - 5 * dt;
-      b.vel[k + 2] *= drag;
-      pos.setXYZ(i, pos.getX(i) + b.vel[k] * dt, pos.getY(i) + b.vel[k + 1] * dt, pos.getZ(i) + b.vel[k + 2] * dt);
+      vel[k] *= drag;
+      vel[k + 1] = vel[k + 1] * drag - 5 * dt;
+      vel[k + 2] *= drag;
+      pos[k] += vel[k] * dt;
+      pos[k + 1] += vel[k + 1] * dt;
+      pos[k + 2] += vel[k + 2] * dt;
     }
-    pos.needsUpdate = true;
-    (b.pts.material as THREE.PointsMaterial).opacity = Math.max(0, 1 - t * t);
+    posA.clearUpdateRanges();
+    posA.addUpdateRange(0, b.count * 3);
+    posA.needsUpdate = true;
+    b.pmat.opacity = Math.max(0, 1 - t * t);
   }
 
+  /** Detaches a finished burst and keeps it for the next spawn. */
   private remove(b: Burst): void {
     this.object.remove(b.group);
-    for (const l of b.layers) l.mat.dispose();
-    b.streak.dispose();
-    const streaks = b.group.children.find((o) => (o as THREE.Mesh).material === b.streak) as THREE.Mesh | undefined;
-    streaks?.geometry.dispose();
-    b.pts.geometry.dispose();
-    (b.pts.material as THREE.Material).dispose();
+    this.free.push(b);
   }
 }

@@ -3,7 +3,7 @@ import { CONFIG } from '../config.ts';
 import { Calibrator, looksLikeGuard, type Calibration, type CalibrationStatus } from './calibration.ts';
 import { Classifier, type ClassifierOutput } from './classifier.ts';
 import { SessionLog } from './session.ts';
-import { Teacher, modelFrom, type MoveScore, type Profile, type TeachStatus } from './teach.ts';
+import { Teacher, handFor, modelFrom, type MoveScore, type Profile, type TeachStatus } from './teach.ts';
 import type { Lm, PoseFrame } from './frame.ts';
 import { PoseTracker } from './pose.ts';
 import { loadPrior, priorSamples, uploadCalibration } from './share.ts';
@@ -272,14 +272,8 @@ export class KeyInput implements InputSource {
 
   recalibrate(): void {}
 
-  private handFor(type: PunchType): Hand {
-    if (type === 'jab') return this.stance === 'orthodox' ? 'left' : 'right';
-    if (type === 'cross') return this.stance === 'orthodox' ? 'right' : 'left';
-    return type.startsWith('left') ? 'left' : 'right';
-  }
-
   private throw(type: PunchType, target: 'head' | 'body'): void {
-    const hand = this.handFor(type);
+    const hand = handFor(type, this.stance);
     const now = performance.now();
     const busy = this.punches[hand];
     const cooldown = this.gassed ? 450 : 250;
