@@ -21,6 +21,7 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
   };
   switch (ev.e) {
     case 'roundStart':
+      sound.stopMusic();
       sound.sfx('hype');
       sound.sfx('bell', { delay: 0.25 });
       excite(ev.round === 3 ? 0.8 : 0.5);
@@ -37,6 +38,7 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
       sound.sfx('cheer', { delay: 0.2 });
       excite(0.5);
       say('time');
+      sound.playMusic('music_break', 1.4);
       hud.show('Time', 1500, 'time');
       break;
     case 'throw':
@@ -95,6 +97,7 @@ export function commonEvent(ev: MatchEvent, hud: Hud, names: [string, string], s
     case 'matchEnd': {
       const r = ev.result;
       sound.sfx('bell');
+      sound.playMusic('music_victory', r.kind === 'ko' || r.kind === 'tko' ? 3 : 2);
       if (r.kind === 'ko' || r.kind === 'tko') {
         sound.duck(0.2, 1500);
         sound.sfx('ko_stinger');

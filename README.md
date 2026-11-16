@@ -119,9 +119,8 @@ flowchart LR
     W["Worker<br/><sub>worker/index.ts</sub>"]
     A[("Static Assets<br/><sub>dist/client</sub>")]
     DO["RoomDO per code<br/><sub>Room + Match, 60 Hz tick</sub>"]
-    DD[("DataDO 'global'<br/><sub>calibrations, prior reservoirs</sub>")]
+    DD[("DataDO 'global'<br/><sub>population prior</sub>")]
   end
-  Admin(["scripts/pull-data.ts"])
   C -->|"page, model, WASM, audio"| A
   C -->|"/ws?create=1 or ?code=CODE"| W
   C -->|"/audio-manifest"| W
@@ -130,24 +129,7 @@ flowchart LR
   W -->|"upgrade, idFromName(CODE)"| DO
   W -->|"/api/*, idFromName('global')"| DD
   DO <-->|"same ws protocol"| C
-  Admin -.->|"/api/export, Bearer ADMIN_KEY"| W
 ```
-
-### Shared calibration data
-
-Every finished calibration is shared automatically (players agree to this through the event waiver before playing) and feeds a population prior that every player's model uses.
-
-What is sent and stored (`shared/calibration-data.ts`): the profile's samples (hand, label and the 17-number motion features per segment, plus head/body for straights when known), verify scores (move id, right reads, tries), stance, pose model, frame rate, the body dip (`bodyDip`, from version 6) and duck/slip thresholds, a random id generated per calibration, the app version and the feature version (6). The built prior is stored per version; the reservoirs it is built from hold only features and punch kinds, so they carry over a version bump. No video, images, landmarks, names, IP addresses or timestamps finer than the UTC day are stored. The client IP is only hashed with a per-instance salt in memory for the rate limit.
-
-Pipeline (`server/data-store.ts`, the same code in the `DataDO` Durable Object and in the Node dev server, which keeps it in the gitignored `data/calibrations.json`):
-
-1. `POST /api/calibration` rejects bodies over 96 KB, more than 5 uploads per IP per hour and more than 2,000 per day, then validates strictly: version 4, exactly 17 finite features each within +-100, 1 to 400 samples with at least one punch, known labels, sane scores and thresholds. Unknown fields are dropped. A repeated id is ignored.
-2. Calibrations whose verify phase read fewer than half the attempts right are stored but kept out of the prior.
-3. Samples are added to one reservoir of 240 per lead/rear hand and label (so orthodox and southpaw data pool by role).
-4. `GET /api/prior?version=4` returns, per role and label, up to 40 representative real samples (k-means++ and 4 Lloyd steps, then the member nearest each centre) plus per-feature mean and std, about 30 KB. It is cached, stored in the object and rebuilt at most every 5 minutes, only after new data (about 10 ms of CPU warm).
-5. The client loads the prior once per page, maps roles to hands for the player's stance and adds it to the k-NN. Prior distances are multiplied by 1.3, so the player's own samples win unless the prior is clearly closer; it mostly fills moves the player taught poorly or not at all. Without a prior the model is unchanged.
-
-`GET /api/export` returns every stored calibration in pages for retuning thresholds and feature weights. It is disabled unless the `ADMIN_KEY` secret is set (`npx wrangler secret put ADMIN_KEY`, or the `ADMIN_KEY` environment variable for `npm start`) and needs `Authorization: Bearer <key>`. `ADMIN_KEY=... npx tsx scripts/pull-data.ts [base-url]` downloads it all into `data/calibrations-export.json`.
 
 One punch, from camera frame to both screens:
 
@@ -243,7 +225,7 @@ Punch pipeline, per hand:
 1. **Track:** each hand is followed on screen in its own frame: origin between the shoulders, x toward the body midline (mirrored for the left hand so both hands share one frame), y up, in sw. While the hand is slower than 1.5 sw/s its rest position follows it.
 2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. Once the hand turns back (one frame past the furthest point and heading home, or nearly stopped), the motion so far is read right away and fires if it is a punch. Otherwise it is followed on and read again when it ends: back to 80% of that distance, stalled for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts) or has settled for 350 ms, so a retraction never becomes a motion of its own.
 3. **Gate:** the motion must travel at least 0.55 sw and reach 4 sw/s (speeds measured over frame gaps longer than 50 ms are scaled up, by at most 1/0.75, since they average over more of the punch). A mostly vertical motion while the other hand moves the same way by at least 60% as much (raising or dropping the guard) is not a punch. This applies whichever classifier is active.
-4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the head dip against the player's body dip gives the target (see Moves). When the shared population prior is available its samples join the player's own at 1.3 times their distance (see Shared calibration data). Without a profile the hand-written rules decide, with the default body dip of 0.4 sw.
+4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the head dip against the player's body dip gives the target (see Moves). When the population prior is available its samples join the player's own at 1.3 times their distance. Without a profile the hand-written rules decide, with the default body dip of 0.4 sw.
 5. **Fire:** the punch is sent with the peak time, on the frame after the peak in most cases.
 
 Defense, every frame:
@@ -290,7 +272,6 @@ npm run deploy
 
 `npm run deploy` builds the client, writes `dist/client/audio-manifest.json` and runs `wrangler deploy`, which prints a `https://keyboard-warrior.<your-subdomain>.workers.dev` URL. `npm run cf:dev` runs the same Worker and Durable Objects locally on http://localhost:8787 without a login.
 
-To enable the calibration data export, set a secret once with `npx wrangler secret put ADMIN_KEY`.
 
 Free plan limits, reset daily at 00:00 UTC: 100,000 Worker requests and 100,000 Durable Object requests (each socket connect is one; incoming WebSocket messages count 20 to 1), and 13,000 GB-s of Durable Object duration, which is about 29 hours of open rooms. Static asset requests are free. Over a limit, new requests fail until the reset. The Node server with `npm run tunnel` remains an option.
 
@@ -314,7 +295,6 @@ npx tsx scripts/eval-session.ts            # train on a teach session, replay a 
 npx tsx scripts/eval-defense.ts            # guard, duck and slip onsets per clip
 npx tsx scripts/dump-segments.ts jab-head  # every motion segment's features in matching clips
 npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense change, --trace for per-frame features
-ADMIN_KEY=... npx tsx scripts/pull-data.ts # download shared calibrations into data/ for retuning
 ```
 
 ### URLs
@@ -420,7 +400,6 @@ scripts/
   eval-*.ts           classifier evaluation on recorded fixtures (eval-core.ts is shared with the tests)
   dump-segments.ts    prints motion segment features
   analyze-fixtures.ts prints classifier decisions per clip
-  pull-data.ts        downloads shared calibrations via /api/export
 tests/                Vitest suites, plus recorded fixtures in tests/fixtures/
 vite.config.ts        Vite config, with a dev-only endpoint that saves recorder clips
 ```

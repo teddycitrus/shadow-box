@@ -64,6 +64,12 @@ function polish(file: string, loop: boolean): void {
   if (r.status === 0) renameSync(tmp, file);
 }
 
+/** Instrumental music for the round break and the end of a match. */
+const MUSIC: Record<string, { prompt: string; ms: number }> = {
+  music_break: { prompt: 'Short high-energy fight night intermission instrumental, hard hip hop drums, punchy brass stabs, arena hype, no vocals', ms: 10_000 },
+  music_victory: { prompt: 'Triumphant boxing victory anthem instrumental, big stadium drums, heroic brass and synth, celebratory hype, no vocals', ms: 28_000 },
+};
+
 /** Minimal .env parser: KEY=value lines, optional quotes, # comments. */
 function readDotEnv(path: string): Record<string, string> {
   if (!existsSync(path)) return {};
@@ -128,6 +134,10 @@ async function main(): Promise<void> {
       name,
       sfx: { loop: !!s.loop },
       run: () => post(`${API}/sound-generation`, key, { text: s.text, duration_seconds: s.seconds, ...(s.loop ? { loop: true } : {}) }),
+    })),
+    ...Object.entries(MUSIC).map(([name, m]): Job => ({
+      name,
+      run: () => post(`${API}/music`, key, { prompt: m.prompt, music_length_ms: m.ms }),
     })),
     ...Object.entries(ANNOUNCER_LINES).map(([k, text]): Job => ({
       name: `announcer_${k}`,

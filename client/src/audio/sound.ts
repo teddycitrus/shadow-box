@@ -49,6 +49,9 @@ export type SfxOpts = {
 };
 
 const MASTER = 0.8;
+const MUSIC_GAIN = 0.55;
+export type MusicName = 'music_break' | 'music_victory';
+const MUSIC_NAMES: MusicName[] = ['music_break', 'music_victory'];
 const CROWD_FILE_GAIN = 0.2;
 
 /**
@@ -144,7 +147,7 @@ export class Sound {
   }
 
   private async loadOverrides(): Promise<void> {
-    const wanted = [...SFX_NAMES, 'crowd', ...Object.keys(ANNOUNCER_LINES).map((k) => `announcer_${k}`)];
+    const wanted = [...SFX_NAMES, ...MUSIC_NAMES, 'crowd', ...Object.keys(ANNOUNCER_LINES).map((k) => `announcer_${k}`)];
     let present: string[] = [];
     try {
       const r = await fetch(`${import.meta.env.BASE_URL}audio-manifest`);
@@ -201,6 +204,40 @@ export class Sound {
     };
     if (delay > 0) setTimeout(run, delay * 1000);
     else run();
+  }
+
+  private music: { src: AudioBufferSourceNode; g: GainNode } | null = null;
+
+  /** Plays a music file (no synth fallback: music is optional), replacing any music already playing. */
+  playMusic(name: MusicName, delay = 0): void {
+    const f = this.files.get(name);
+    if (!this.ctx || this.muted || !f) return;
+    this.stopMusic(0.3);
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = f;
+    const g = ctx.createGain();
+    const t = ctx.currentTime + Math.max(0, delay + this.cueDelay);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(MUSIC_GAIN, t + 0.8);
+    src.connect(g).connect(this.out!);
+    src.start(t);
+    const m = { src, g };
+    this.music = m;
+    src.onended = () => {
+      if (this.music === m) this.music = null;
+    };
+  }
+
+  stopMusic(fade = 0.6): void {
+    const m = this.music;
+    if (!m || !this.ctx) return;
+    this.music = null;
+    const t = this.ctx.currentTime;
+    m.g.gain.cancelScheduledValues(t);
+    m.g.gain.setValueAtTime(m.g.gain.value, t);
+    m.g.gain.linearRampToValueAtTime(0, t + fade);
+    m.src.stop(t + fade + 0.05);
   }
 
   startCrowd(): void {
