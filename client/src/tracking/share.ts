@@ -7,49 +7,12 @@ import type { Stance, Target } from '../../../shared/types.ts';
 import type { Sample } from './model.ts';
 import type { Profile } from './teach.ts';
 
-const CONSENT_KEY = 'kw:share-calibration';
 const PRIOR_TIMEOUT_MS = 8_000;
 
 export interface UploadMeta {
   stance: Stance;
   fps: number;
   model: 'full' | 'lite';
-}
-
-/** true or false once the player chose, null if never asked. Off unless they opt in. */
-export function shareConsent(): boolean | null {
-  try {
-    const v = localStorage.getItem(CONSENT_KEY);
-    return v === '1' ? true : v === '0' ? false : null;
-  } catch {
-    return null;
-  }
-}
-
-let pending: CalibrationUpload | null = null;
-const listeners = new Set<() => void>();
-
-/** Called when consent or the pending upload changes, so every toggle stays in sync. */
-export function onShareChange(fn: () => void): () => void {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
-}
-
-export function setShareConsent(on: boolean): void {
-  try {
-    localStorage.setItem(CONSENT_KEY, on ? '1' : '0');
-  } catch {
-    // storage blocked: the choice lasts for this page only
-  }
-  const p = pending;
-  pending = null;
-  if (on && p) void send(p);
-  for (const fn of listeners) fn();
-}
-
-/** A finished calibration is waiting for the player's answer. */
-export function hasPendingUpload(): boolean {
-  return pending !== null;
 }
 
 export function toUpload(profile: Profile, meta: UploadMeta): CalibrationUpload {
@@ -72,18 +35,12 @@ export function toUpload(profile: Profile, meta: UploadMeta): CalibrationUpload 
 }
 
 /**
- * Sends a finished calibration if the player opted in. Without an answer yet it is held in
- * memory, so saying yes on the results screen still sends it; saying no drops it.
+ * Sends every finished calibration. Consent is collected outside the app (the event waiver), so
+ * there is no in-app prompt; only anonymous motion measurements are sent, never video.
  */
 export async function uploadCalibration(profile: Profile, meta: UploadMeta): Promise<boolean> {
   if (!profile.samples.some((s) => s.label !== 'none')) return false;
-  const c = toUpload(profile, meta);
-  const consent = shareConsent();
-  if (consent === null) {
-    pending = c;
-    for (const fn of listeners) fn();
-  }
-  return consent ? send(c) : false;
+  return send(toUpload(profile, meta));
 }
 
 async function send(c: CalibrationUpload): Promise<boolean> {

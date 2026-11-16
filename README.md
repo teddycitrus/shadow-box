@@ -125,7 +125,7 @@ flowchart LR
   C -->|"page, model, WASM, audio"| A
   C -->|"/ws?create=1 or ?code=CODE"| W
   C -->|"/audio-manifest"| W
-  C -.->|"/api/calibration (opt-in), /api/prior"| W
+  C -.->|"/api/calibration, /api/prior"| W
   W -->|"audio-manifest.json"| A
   W -->|"upgrade, idFromName(CODE)"| DO
   W -->|"/api/*, idFromName('global')"| DD
@@ -135,7 +135,7 @@ flowchart LR
 
 ### Shared calibration data
 
-Players can opt in to share each finished calibration, which feeds a population prior that every player's model uses. The checkbox in the camera lobby is off by default; after the first calibration the results screen asks once. The choice is kept in `localStorage`.
+Every finished calibration is shared automatically (players agree to this through the event waiver before playing) and feeds a population prior that every player's model uses.
 
 What is sent and stored (`shared/calibration-data.ts`): the profile's samples (hand, label and the 17-number motion features per segment, plus head/body for straights when known), verify scores (move id, right reads, tries), stance, pose model, frame rate, the body dip (`bodyDip`, from version 6) and duck/slip thresholds, a random id generated per calibration, the app version and the feature version (6). The built prior is stored per version; the reservoirs it is built from hold only features and punch kinds, so they carry over a version bump. No video, images, landmarks, names, IP addresses or timestamps finer than the UTC day are stored. The client IP is only hashed with a per-instance salt in memory for the rate limit.
 

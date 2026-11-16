@@ -8,7 +8,6 @@ import { ProceduralAvatar, type Avatar } from '../scene/avatar.ts';
 import { FirstPersonGloves, Sparks } from '../scene/fp.ts';
 import { Stage } from '../scene/stage.ts';
 import { KEY_HELP, type InputSource } from '../tracking/input.ts';
-import { hasPendingUpload, onShareChange, setShareConsent, shareConsent } from '../tracking/share.ts';
 import type { TeachStatus } from '../tracking/teach.ts';
 import { commonEvent } from '../ui/announce.ts';
 import { button, flag, go, h } from '../ui/dom.ts';
@@ -105,13 +104,6 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       copyRow('Send to viewers', `/watch/${opts.code}`),
     );
   }
-  const shareBox = h('input', { type: 'checkbox' });
-  shareBox.addEventListener('change', () => setShareConsent(shareBox.checked));
-  const shareData = h('label', { class: 'share-data' }, shareBox,
-    h('span', {}, h('b', {}, 'Share my calibration data to improve tracking'), h('small', {}, 'Only motion measurements are sent, never video.')));
-  const syncShare = () => (shareBox.checked = shareConsent() === true);
-  syncShare();
-  onShareChange(syncShare);
   const lobby = h('div', { class: 'panel lobby' },
     h('h2', {}, opts.practice ? 'Practice' : 'Fight lobby'),
     share,
@@ -119,7 +111,6 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
     players,
     h('div', { class: 'row' }, stanceBtn, input.kind === 'camera' ? recal : null),
     input.kind === 'camera' ? h('div', { class: 'row' }, reteach, skipTeach) : null,
-    input.kind === 'camera' ? shareData : null,
     h('div', { class: 'row ready-row' }, readyBtn),
     h('p', { class: 'hint' }, input.kind === 'keys'
       ? 'Keyboard mode. Press Ready to start.'
@@ -237,19 +228,6 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
         h('div', { class: m.ok >= CONFIG.model.verifyPasses ? 'ok' : 'bad' },
           h('span', {}, m.wrongTarget ? `${m.prompt} (${m.wrongTarget} at the wrong height)` : m.prompt), h('b', {}, `${m.ok}/${m.tries}`)))),
     );
-    if (shareConsent() === null && hasPendingUpload()) {
-      // Asked once, after the first finished calibration; the lobby checkbox changes it later.
-      resultsUntil = performance.now() + RESULTS_MS * 2;
-      const answer = (on: boolean) => {
-        setShareConsent(on);
-        ask.replaceChildren(on ? 'Thanks. Calibration shared.' : 'Not shared.');
-        resultsUntil = performance.now() + 1_500;
-      };
-      const ask = h('div', { class: 'share-ask' },
-        h('div', {}, 'Share this calibration to improve tracking for everyone? Only motion measurements are sent, never video.'),
-        h('div', { class: 'row' }, button('Share', () => answer(true), 'primary'), button('No thanks', () => answer(false), 'ghost')));
-      teachBox.append(ask);
-    }
   }
 
   link.handlers = {
