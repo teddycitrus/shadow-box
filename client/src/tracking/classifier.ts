@@ -114,6 +114,8 @@ interface Active {
   startIdx: number;
   anchor: P2;
   maxD: number;
+  /** A motion straight out of a return: where the hand rested before it (see HandState.pivot). */
+  home: P2 | null;
   peakIdx: number;
   maxSpeed: number;
   /** Top speed corrected for the frame gap (see gapBoost). */
@@ -139,6 +141,13 @@ interface HandState {
   stillSince: number;
   /** A fired punch locks the hand until it comes back; a non-punch only waits for it to settle. */
   fired: boolean;
+  /**
+   * While returning: the point nearest home along the last motion's line so far (where a partial
+   * retraction turned round). A clear new motion away from it is the next punch (doubles, combos).
+   */
+  pivot: (P2 & { along: number; speed: number; dx: number; dy: number }) | null;
+  /** Set when a motion starts from the pivot: the rest position it left from. */
+  home: P2 | null;
 }
 
 export interface ClassifierOutput {
@@ -338,10 +347,17 @@ export class Classifier {
       // Back once the hand is home along the line it went out on; a fast swing through rest to the other side also counts.
       const along = (smp.p.x - st.anchor.x) * st.lastDir.x + (smp.p.y - st.anchor.y) * st.lastDir.y;
       const back = along < Math.max(c.returnDist, st.lastMax * c.returnFraction);
-      const settled = t - st.stillSince >= c.settleMs;
-      if ((back || settled) && (!st.fired || t - st.lastFire >= cooldown)) {
+      const settled = t - st.stillSince >= (st.fired ? c.settleMs : c.settleIgnoredMs);
+      const cool = !st.fired || t - st.lastFire >= cooldown;
+      if ((back || settled) && cool) {
         st.mode = 'ready';
+        st.home = null;
         if (settled && !back) st.anchor = { x: smp.p.x, y: smp.p.y };
+      } else if (this.relaunch(st, smp, along)) {
+        // A new motion straight out of a partial return: it is measured from where the hand turned.
+        st.mode = 'ready';
+        st.home = st.anchor;
+        st.anchor = { x: st.pivot!.x, y: st.pivot!.y };
       } else {
         if (st.fired && speed >= c.startSpeed && t - st.lastIgnored > 300) {
           st.lastIgnored = t;
@@ -355,11 +371,16 @@ export class Classifier {
       if (speed < c.restSpeed) {
         st.anchor.x += (smp.p.x - st.anchor.x) * k;
         st.anchor.y += (smp.p.y - st.anchor.y) * k;
+        st.home = null;
         return null;
       }
       const prev = st.buf.at(-2);
       const prevDist = prev ? Math.hypot(prev.p.x - st.anchor.x, prev.p.y - st.anchor.y) : 0;
-      if (dist < c.startDist || dist <= prevDist) return null;
+      const d0 = Math.hypot(smp.p.x - st.anchor.x, smp.p.y - st.anchor.y);
+      if (d0 < c.startDist || d0 <= prevDist) {
+        st.home = null;
+        return null;
+      }
       // The motion starts at the last frame the hand was still near its rest position.
       const ax = st.anchor.x, ay = st.anchor.y;
       let i = buf.length - 1;
@@ -372,7 +393,8 @@ export class Classifier {
         di = dq;
       }
       st.mode = 'active';
-      st.active = { startIdx: i, anchor: { x: ax, y: ay }, maxD: 0, peakIdx: i, maxSpeed: 0, gateSpeed: 0, maxUp: 0, stall: 0, checkedPeakT: -Infinity };
+      st.active = { startIdx: i, anchor: { x: ax, y: ay }, maxD: 0, home: st.home, peakIdx: i, maxSpeed: 0, gateSpeed: 0, maxUp: 0, stall: 0, checkedPeakT: -Infinity };
+      st.home = null;
       for (let j = i; j < st.buf.length - 1; j++) this.track(st.active, st.buf[j], j);
     }
     const a = st.active!;
@@ -381,9 +403,10 @@ export class Classifier {
     const d = Math.hypot(smp.p.x - a.anchor.x, smp.p.y - a.anchor.y);
     a.stall = speed < a.maxSpeed * c.stopFraction ? a.stall + 1 : 0;
     const reversed = a.maxD >= c.minTravel * 0.5 && d < a.maxD * c.reverseFraction;
-    const stopped = a.maxD >= c.minTravel && a.stall >= 2;
+    const travel = this.travel(a, st.buf[a.peakIdx].p);
+    const stopped = travel >= c.minTravel && a.stall >= 2;
     const tooLong = t - st.buf[a.startIdx].t > c.maxDurationMs;
-    const aborted = a.maxD < c.minTravel && d < c.startDist * 0.5;
+    const aborted = travel < c.minTravel && d < c.startDist * 0.5;
     if (aborted) {
       st.mode = 'ready';
       st.active = null;
@@ -394,15 +417,42 @@ export class Classifier {
       // and fire right away when it is a punch; otherwise keep following it and decide at the end.
       const pk = st.buf[a.peakIdx];
       const since = st.buf.length - 1 - a.peakIdx;
-      if (c.earlyFire && since >= c.peakConfirmFrames && pk.t !== a.checkedPeakT && a.maxD >= c.minTravel && d <= a.maxD * c.peakConfirmDrop && this.pastPeak(a, pk.p, smp)) {
+      if (c.earlyFire && since >= c.peakConfirmFrames && pk.t !== a.checkedPeakT && travel >= c.minTravel && d <= a.maxD * c.peakConfirmDrop && this.pastPeak(a, pk.p, smp)) {
         a.checkedPeakT = pk.t;
         const seg = this.segment(hand, st, a, chinY, t);
         const r = this.decide(seg);
-        if (r.punch) return this.finish(hand, st, a, chinY, t, seg, r);
+        if (r.punch && this.cooled(st, t)) return this.finish(hand, st, a, chinY, t, seg, r);
       }
       return null;
     }
     return this.finish(hand, st, a, chinY, t);
+  }
+
+  /**
+   * Follows the turning point of a hand on its way back (see HandState.pivot) and tells whether a
+   * clear new motion has started from it: the hand turned there (came back some way, or nearly
+   * stopped) and is now moving fast and further away from it.
+   */
+  private relaunch(st: HandState, smp: Sample, along: number): boolean {
+    const c = CONFIG.punch;
+    if (!c.relaunch) return false;
+    const p = st.pivot;
+    const prev = st.buf.at(-2);
+    if (!p || along < p.along) {
+      // The direction the hand arrived from, to tell a turn from a sweep that carries on.
+      const dx = prev ? smp.p.x - prev.p.x : 0, dy = prev ? smp.p.y - prev.p.y : 0;
+      st.pivot = { x: smp.p.x, y: smp.p.y, along, speed: smp.f.speed, dx, dy };
+      return false;
+    }
+    if (smp.f.speed < c.startSpeed) return false;
+    if (st.fired && p.along > st.lastMax * c.relaunchBack) return false;
+    const mx = smp.p.x - p.x, my = smp.p.y - p.y;
+    const d = Math.hypot(mx, my);
+    const dPrev = prev ? Math.hypot(prev.p.x - p.x, prev.p.y - p.y) : 0;
+    if (d < c.relaunchDist || d <= dPrev) return false;
+    // A real turn: the hand nearly stopped there, or now heads off at least relaunchTurnCos away from how it came in.
+    const a = Math.hypot(p.dx, p.dy);
+    return p.speed <= c.relaunchStillSpeed || (a > 0 && (mx * p.dx + my * p.dy) / (a * d) <= c.relaunchTurnCos);
   }
 
   /**
@@ -429,6 +479,19 @@ export class Classifier {
     a.maxUp = Math.max(a.maxUp, s.f.vUp);
   }
 
+  /**
+   * How far the motion went: from where it started, or for a motion straight out of a return
+   * (a double jab) from where the hand rested before, if that is further.
+   */
+  private travel(a: Active, peak: P2): number {
+    return a.home ? Math.max(a.maxD, Math.hypot(peak.x - a.home.x, peak.y - a.home.y)) : a.maxD;
+  }
+
+  /** The hand's last punch fired at least the cooldown ago; no punch fires sooner, even one straight out of a return. */
+  private cooled(st: HandState, t: number): boolean {
+    return t - st.lastFire >= (this.gassed ? CONFIG.punch.gassedCooldownMs : CONFIG.punch.cooldownMs);
+  }
+
   /** Builds the segment, decides it, and moves the hand on to waiting for its return. */
   private finish(hand: Hand, st: HandState, a: Active, chinY: number, t: number, early?: Segment, read?: Decision): (Punch & { at: number }) | null {
     st.active = null;
@@ -438,13 +501,15 @@ export class Classifier {
     const n = Math.hypot(pk.x - a.anchor.x, pk.y - a.anchor.y) || 1;
     st.lastDir = { x: (pk.x - a.anchor.x) / n, y: (pk.y - a.anchor.y) / n };
     st.stillSince = Infinity;
+    st.pivot = null;
     const seg = early ?? this.segment(hand, st, a, chinY, t);
     this.onSegment?.(seg);
     const r = read ?? this.decide(seg);
     const punch = r.punch;
-    this.lastDecision = `${explain(seg, r)}${punch && !this.canPunch ? ' (blocked: cannot punch now)' : ''}`;
+    const cooled = this.cooled(st, t);
+    this.lastDecision = `${explain(seg, r)}${punch && !this.canPunch ? ' (blocked: cannot punch now)' : punch && !cooled ? ' (blocked: cooldown)' : ''}`;
     this.onDecision?.(seg, punch, this.lastDecision);
-    st.fired = !!punch && this.canPunch;
+    st.fired = !!punch && this.canPunch && cooled;
     if (!st.fired) return null;
     st.lastFire = t;
     return { ...punch!, at: seg.peakT };
@@ -482,7 +547,7 @@ export class Classifier {
       forward: w.z * fwd + w.scale * Math.max(0, pk.f.scale - s0.f.scale) + w.travel * a.maxD,
       elbow: maxElbow, startElbow: s0.f.elbow, startY: s0.f.y, peakY: pk.f.y, chinY,
       startHead: s0.f.headDist, peakHead: pk.f.headDist, scaleGain: pk.f.scale - s0.f.scale,
-      travel: a.maxD, maxSpeed: a.gateSpeed, maxUp: a.maxUp, reach: pk.f.reach, startReach: s0.f.reach,
+      travel: this.travel(a, pk.p), maxSpeed: a.gateSpeed, maxUp: a.maxUp, reach: pk.f.reach, startReach: s0.f.reach,
       fromGuard: this.nearGuard(s0.f),
       start, peak: pk.p, nose: pk.nose, path, other, otherRise,
       headDrop: s0.nose.y - pk.nose.y,
@@ -558,7 +623,7 @@ function gapBoost(gapMs: number): number {
 }
 
 function newHand(): HandState {
-  return { mode: 'ready', anchor: null, buf: [], active: null, lastMax: 0, lastDir: { x: 0, y: 1 }, lastFire: -Infinity, lastMotion: -Infinity, lastIgnored: -Infinity, stillSince: Infinity, fired: false };
+  return { mode: 'ready', anchor: null, buf: [], active: null, lastMax: 0, lastDir: { x: 0, y: 1 }, lastFire: -Infinity, lastMotion: -Infinity, lastIgnored: -Infinity, stillSince: Infinity, fired: false, pivot: null, home: null };
 }
 
 /** p += (r - p) * k per landmark (z by kz), v taken from r. */

@@ -58,6 +58,21 @@ export const CONFIG = {
     returnDist: 0.35,
     returnFraction: 0.45,
     settleMs: 350,
+    /** Settling after a motion that did not fire (nothing to retract, so a shorter pause will do). */
+    settleIgnoredMs: 100 as number,
+    /**
+     * Doubles and combos: a hand on its way back that turns round (slows under relaunchStillSpeed,
+     * or leaves in a direction at most relaunchTurnCos to the one it came in on: 0 is a right
+     * angle) and moves relaunchDist away from that point at punch speed
+     * starts a new motion from there, without first going home or settling. After a fired punch
+     * the hand must have come back past relaunchBack of it, and the next punch still fires no
+     * sooner than cooldownMs after the last.
+     */
+    relaunch: true as boolean,
+    relaunchTurnCos: 0 as number,
+    relaunchStillSpeed: 2.0 as number,
+    relaunchDist: 0.35 as number,
+    relaunchBack: 0.8 as number,
     cooldownMs: 250,
     gassedCooldownMs: 450,
     swFollowMs: 1_000,
@@ -124,6 +139,13 @@ export const CONFIG = {
     /** Verify: a punch read as no punch drops at most this many of the non-punch examples nearest to it. */
     maxShadowDrop: 2,
     repsPerMove: 5,
+    /** Reps of each standing punch thrown as fast as possible, right after its normal reps. */
+    fastReps: 3,
+    /** In a fast step, motions closer together than this are one attempt (fast reps follow each other closely). */
+    fastAttemptGapMs: 100,
+    /** Combo step: combos to collect, and the most time between punch peaks within one combo. */
+    comboReps: 3,
+    comboGapMs: 700,
     /** Motions of one hand closer together than this are one attempt (wind-up, punch, overshoot). */
     attemptGapMs: 250,
     /** The punch in an attempt is its last motion travelling at least this fraction of the biggest. */

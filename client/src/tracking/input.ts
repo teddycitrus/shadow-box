@@ -44,7 +44,7 @@ export interface InputSource {
 }
 
 /** Bump when the feature vector or the taught labels change so old profiles are not reused. */
-const PROFILE_KEY = 'shadowbox:profile:v6';
+const PROFILE_KEY = 'shadowbox:profile:v7';
 
 export const SW_METRES = 0.38;
 
@@ -149,7 +149,7 @@ export class CameraInput implements InputSource {
   private loadProfile(): Profile | null {
     try {
       const p = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? 'null') as Profile | null;
-      return p && p.version === 6 && Array.isArray(p.samples) && typeof p.bodyDip === 'number' ? p : null;
+      return p && p.version === 7 && Array.isArray(p.samples) && typeof p.bodyDip === 'number' ? p : null;
     } catch {
       return null;
     }

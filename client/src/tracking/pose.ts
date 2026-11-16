@@ -8,8 +8,15 @@ const BASE = import.meta.env.BASE_URL;
 
 export type PoseModel = 'full' | 'lite';
 
-/** Auto model choice: drop from full to lite when tracking stays under MIN_FPS for SLOW_MS because detection is the bottleneck. */
+/**
+ * Auto model choice: try lite when, for SLOW_MS, the full model is what holds tracking back and it
+ * tracks under MIN_FPS or misses more than MAX_MISSED of the camera's frames (fast punches span few
+ * frames, so every camera frame counts). Lite is kept only when it tracks at least LITE_GAIN times
+ * as many frames per second; otherwise the full model comes back for good.
+ */
 const MIN_FPS = 28;
+const MAX_MISSED = 0.15;
+const LITE_GAIN = 1.2;
 const SLOW_MS = 2_000;
 /** Measuring starts this long after tracking starts (the first frames include GPU warm-up). */
 const WARMUP_MS = 1_500;
@@ -30,6 +37,8 @@ export class PoseTracker {
   private skipTimes: number[] = [];
   private startedAt = 0;
   private slowSince: number | null = null;
+  /** While trying lite: the full model's tracking rate and when lite started. */
+  private trial: { fullFps: number; since: number } | null = null;
   delegate: 'GPU' | 'CPU' | null = null;
   model: PoseModel = 'full';
   /** True when the model was picked with ?model= and must not change. */
@@ -148,25 +157,52 @@ export class PoseTracker {
   }
 
   /**
-   * Switches full to lite once tracking has stayed under MIN_FPS for SLOW_MS, but only when the
-   * detector is what holds it back (camera frames skipped, or detection too slow for MIN_FPS).
-   * A camera that simply delivers fewer frames keeps the more accurate full model.
+   * Tries lite once the full model has held tracking back for SLOW_MS (see MIN_FPS), but only when
+   * the detector is the bottleneck (camera frames skipped, or detection too slow for the camera).
+   * A camera that simply delivers fewer frames keeps the more accurate full model. After a trial
+   * of SLOW_MS past warm-up, lite stays only if it tracks LITE_GAIN times as many frames.
    */
   private adapt(now: number): void {
-    if (this.pinned || this.model === 'lite' || now - this.startedAt < WARMUP_MS) return;
+    if (this.pinned || this.switching || now - this.startedAt < WARMUP_MS) return;
     const fps = this.fps;
     while (this.skipTimes.length && now - this.skipTimes[0] >= 1000) this.skipTimes.shift();
-    const bottleneck = this.skipTimes.length >= 3 || this.detectTime > 1000 / MIN_FPS;
-    if (fps >= MIN_FPS || !bottleneck) {
+    const camFps = fps + this.skipTimes.length;
+    if (this.model === 'lite') {
+      const tr = this.trial;
+      if (!tr || now - tr.since < WARMUP_MS + SLOW_MS) return;
+      this.trial = null;
+      if (fps >= tr.fullFps * LITE_GAIN) {
+        this.pinned = true;
+        return;
+      }
+      this.swap('full');
+      this.pinned = true;
+      return;
+    }
+    const bottleneck = this.skipTimes.length >= 3 || this.detectTime > 1000 / Math.max(MIN_FPS, camFps);
+    const slow = fps < MIN_FPS || fps < camFps * (1 - MAX_MISSED);
+    if (!slow || !bottleneck) {
       this.slowSince = null;
       return;
     }
     this.slowSince ??= now;
     if (now - this.slowSince < SLOW_MS) return;
+    this.trial = { fullFps: fps, since: now };
+    this.swap('lite');
+  }
+
+  private swap(model: PoseModel): void {
     this.switching = true;
-    void this.load('lite')
+    void this.load(model)
+      .then(() => {
+        // The trial starts once lite is running; frame counts restart for the new model.
+        if (this.trial) this.trial.since = performance.now();
+        this.frameTimes = [];
+        this.skipTimes = [];
+      })
       .catch(() => {
-        // Keep the full model when lite cannot be loaded.
+        // Keep the current model when the other one cannot be loaded.
+        this.trial = null;
         this.pinned = true;
       })
       .finally(() => {

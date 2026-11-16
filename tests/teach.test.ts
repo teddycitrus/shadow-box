@@ -3,13 +3,21 @@ import { measure } from '../client/src/tracking/calibration.ts';
 import { Classifier, type Segment } from '../client/src/tracking/classifier.ts';
 import { KnnModel, type Label } from '../client/src/tracking/model.ts';
 import { synthFrame, type SynthState } from '../client/src/tracking/synthetic.ts';
-import { REST_STEP_MS, Teacher, handFor, modelFrom, pickReps, pruneOutliers, type TeachStatus } from '../client/src/tracking/teach.ts';
+import { REST_STEP_MS, Teacher, comboTypes, handFor, modelFrom, pickCombos, pickReps, pruneOutliers, type TeachStatus } from '../client/src/tracking/teach.ts';
 import { CONFIG } from '../client/src/config.ts';
 import { NO_DEFENSE, type DefenseState, type Punch, type PunchType, type Target } from '../shared/types.ts';
 
 const DT = 1000 / 30;
 const GUARD: DefenseState = { ...NO_DEFENSE, guard: true };
 const cal = measure(Array.from({ length: 15 }, (_, i) => synthFrame({ t: i * DT, defense: GUARD })));
+
+/** A jab, cross, left hook combo starting at t0, one punch every 480 ms (each takes 420 ms). */
+function comboState(t: number, t0: number): SynthState {
+  const types = comboTypes('orthodox');
+  const i = Math.max(0, Math.min(types.length - 1, Math.floor((t - t0 - 100) / 480)));
+  const type = types[i];
+  return { t, defense: NO_DEFENSE, punch: { type, hand: handFor(type, 'orthodox'), target: 'head', startT: t0 + 100 + i * 480, windupMs: 0 } };
+}
 
 /**
  * Plays the whole guided calibration with synthetic moves and returns the trained profile.
@@ -32,6 +40,8 @@ function teach(misread?: { prompt: string; throw: PunchType; target?: Target }) 
   let throwTarget: Target = 'body';
   let s: TeachStatus | null = null;
   const results: string[] = [];
+  /** Per learn step: time spent on it and the reps it had counted. */
+  const stepTimes = new Map<string, { ms: number; reps: number }>();
   for (let guard = 0; guard < 20000 && !teacher.done; guard++) {
     const step = s?.step ?? null;
     let st: SynthState = { t, defense: NO_DEFENSE };
@@ -49,6 +59,9 @@ function teach(misread?: { prompt: string; throw: PunchType; target?: Target }) 
     } else if (step?.kind === 'punch') {
       if (t - punchAt > 800) punchAt = t;
       st = { t, defense: NO_DEFENSE, punch: { type: step.type!, hand: handFor(step.type!, 'orthodox'), target: step.target!, startT: punchAt + 100, windupMs: 60 } };
+    } else if (step?.kind === 'combo') {
+      st = comboState(t, punchAt);
+      if (t - punchAt > 2000) punchAt = t;
     } else if (step?.kind === 'rest') {
       // Guard up and down, then dropping the hands (gassed pose) and raising them again, ending at guard.
       const k = Math.floor((t - stepStart) / 900) % 2 === 1;
@@ -59,6 +72,7 @@ function teach(misread?: { prompt: string; throw: PunchType; target?: Target }) 
     }
     const out = c.update(synthFrame(st));
     s = teacher.update(t, out.features);
+    if (s.phase === 'learn' && s.step) stepTimes.set(s.step.id, { ms: (stepTimes.get(s.step.id)?.ms ?? 0) + DT, reps: s.reps });
     if (s.verify?.result && results.at(-1) !== s.verify.result.text) results.push(s.verify.result.text);
     const key = `${s.phase}:${s.index}`;
     if (key !== stepKey) {
@@ -68,23 +82,35 @@ function teach(misread?: { prompt: string; throw: PunchType; target?: Target }) 
     }
     t += DT;
   }
-  return { profile: teacher.profile(), t, results, done: teacher.done };
+  return { profile: teacher.profile(), t, results, done: teacher.done, stepTimes };
 }
 
 describe('guided calibration', () => {
-  const { profile, t, done } = teach();
+  const { profile, t, done, stepTimes } = teach();
 
   it('finishes in a few minutes', () => {
     expect(done).toBe(true);
-    expect(t).toBeLessThan(180_000);
+    expect(t).toBeLessThan(240_000);
   });
 
   it('learns every punch it prompted, with all of its reps', () => {
-    expect(profile.version).toBe(6);
+    expect(profile.version).toBe(7);
     expect(profile.learned).toEqual([
       'jab-head', 'cross-head', 'leftHook-head', 'rightHook-head', 'leftUppercut-head', 'rightUppercut-head', 'jab-body', 'cross-body',
     ]);
-    expect(profile.samples.filter((s) => s.label !== 'none').length).toBeGreaterThanOrEqual(8 * CONFIG.model.repsPerMove);
+    // The normal reps, a fast pass of every standing punch, and the three punches of each combo.
+    const taught = 8 * CONFIG.model.repsPerMove + 6 * CONFIG.model.fastReps + 3 * CONFIG.model.comboReps;
+    expect(profile.samples.filter((s) => s.label !== 'none').length).toBeGreaterThanOrEqual(taught - 4);
+  });
+
+  it('collects every fast rep and combo without waiting for the step to time out', () => {
+    const steps = new Teacher('orthodox').steps.filter((s) => s.fast || s.kind === 'combo');
+    expect(steps).toHaveLength(7);
+    for (const s of steps) {
+      const got = stepTimes.get(s.id)!;
+      expect(got.reps, s.id).toBe(s.reps);
+      expect(got.ms, s.id).toBeLessThan(CONFIG.model.moveTimeoutMs);
+    }
   });
 
   it('sets the body dip between standing and the crouch', () => {
@@ -152,16 +178,27 @@ describe('guided calibration', () => {
     expect(cross.ok).toBeGreaterThanOrEqual(CONFIG.model.verifyPasses);
   });
 
-  it('teaches the duck first, every punch standing, then jab and cross crouched', () => {
+  it('teaches the duck first, every punch standing then fast, then jab and cross crouched, then a combo', () => {
     const all = new Teacher('orthodox').steps;
     expect(all.findIndex((s) => s.kind === 'duck')).toBeLessThan(all.findIndex((s) => s.kind === 'punch'));
-    const steps = all.filter((s) => s.kind === 'punch');
+    const steps = all.filter((s) => s.kind === 'punch' && !s.fast);
     expect(steps.filter((s) => s.target === 'body').map((s) => s.prompt)).toEqual(['Crouch and jab', 'Crouch and cross']);
     expect(steps.filter((s) => s.target === 'head')).toHaveLength(6);
     for (const s of steps) {
       expect(s.how).toContain(s.target === 'head' ? 'standing tall' : 'like a duck');
       expect(s.how).toContain(`${CONFIG.model.repsPerMove} times`);
     }
+    // Each standing punch is followed right away by the same punch thrown fast.
+    for (const s of steps.filter((x) => x.target === 'head')) {
+      const next = all[all.indexOf(s) + 1];
+      expect(next).toMatchObject({ kind: 'punch', type: s.type, target: 'head', fast: true, reps: CONFIG.model.fastReps });
+      expect(next.how).toContain(`${CONFIG.model.fastReps} times`);
+    }
+    expect(all.at(-1)).toMatchObject({ kind: 'combo', reps: CONFIG.model.comboReps });
+  });
+
+  it('verifies only the normal moves, not the fast passes', () => {
+    expect(profile.scores.map((s) => s.id)).not.toContain('jab-head-fast');
   });
 });
 
@@ -186,6 +223,25 @@ describe('rep picking and outliers', () => {
     const { reps, rest } = pickReps([windup, punch, fidget, other, second], 'left', 5);
     expect(reps).toEqual([punch, second]);
     expect(rest).toEqual([windup, fidget, other]);
+  });
+
+  it('keeps fast reps apart when they follow each other closely', () => {
+    // Back-to-back fast jabs: each motion starts 120 ms after the previous one ended.
+    const segs = [0, 1, 2].map((i) => seg('left', 1000 + i * 330, 1.2));
+    expect(pickReps(segs, 'left', 3).reps).toHaveLength(1);
+    expect(pickReps(segs, 'left', 3, CONFIG.model.fastAttemptGapMs).reps).toEqual(segs);
+  });
+
+  it('matches jab, cross and hook in each combo and skips incomplete ones', () => {
+    const combo = (t: number) => [seg('left', t, 1.3), seg('right', t + 350, 1.4), seg('left', t + 700, 1.5, 1.4, 0.4)];
+    const a = combo(1000), b = combo(4000);
+    // A fidget of the lead hand before the jab, and an attempt with no cross.
+    const fidget = seg('left', 3500, 0.5);
+    const broken = [seg('left', 8000, 1.3), seg('left', 8500, 1.5)];
+    expect(pickCombos([...a, fidget, ...b, ...broken], 'orthodox')).toEqual([a, b]);
+    // Southpaw: the jab and hook are thrown with the right hand.
+    const sp = [seg('right', 1000, 1.3), seg('left', 1350, 1.4), seg('right', 1700, 1.5)];
+    expect(pickCombos(sp, 'southpaw')).toEqual([sp]);
   });
 
   it('caps the reps at the number asked for', () => {

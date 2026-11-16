@@ -3,7 +3,7 @@ import { CONFIG } from '../config.ts';
 import { passesGate, type Features, type Segment } from './classifier.ts';
 import { KnnModel, bodyDipFrom, kindOf, vector, type Label, type Sample } from './model.ts';
 
-export type StepKind = 'rest' | 'punch' | 'duck' | 'slipLeft' | 'slipRight';
+export type StepKind = 'rest' | 'punch' | 'combo' | 'duck' | 'slipLeft' | 'slipRight';
 
 export interface TeachStep {
   id: string;
@@ -13,6 +13,10 @@ export interface TeachStep {
   kind: StepKind;
   type?: PunchType;
   target?: Target;
+  /** Reps (combos for a combo step) to collect; repsPerMove when not set. */
+  reps?: number;
+  /** A punch step thrown as fast as possible: taught like the normal step, not verified on its own. */
+  fast?: boolean;
 }
 
 const DEFENSE_STEP_MS = 3_500;
@@ -20,9 +24,16 @@ export const REST_STEP_MS = 6_000;
 
 function teachSteps(): TeachStep[] {
   const reps = CONFIG.model.repsPerMove;
+  const fastReps = CONFIG.model.fastReps;
   const p = (type: PunchType, target: Target, prompt: string): TeachStep => ({
     id: `${type}-${target}`, prompt, kind: 'punch', type, target,
     how: `${target === 'head' ? 'Aim at the face, standing tall' : 'Dip your head like a duck, then punch'}. ${reps} times, back to guard after each`,
+  });
+  // Right after the normal reps, the same punch as fast as the player can throw it: fast punches
+  // cover the same path in a few frames and look different to the model.
+  const fast = (type: PunchType, prompt: string): TeachStep => ({
+    id: `${type}-head-fast`, prompt: `${prompt}, fast`, kind: 'punch', type, target: 'head', reps: fastReps, fast: true,
+    how: `As fast and sharp as you can, snapping it back. ${fastReps} times`,
   });
   // A standing punch is a head shot and a crouched one a body shot. The duck comes first so the
   // crouch depth is known, and the crouch steps show how deep this player dips on a body shot.
@@ -33,15 +44,32 @@ function teachSteps(): TeachStep[] {
     { id: 'slipLeft', prompt: 'Slip left', how: 'Do it once or twice, then come back', kind: 'slipLeft' },
     { id: 'slipRight', prompt: 'Slip right', how: 'Do it once or twice, then come back', kind: 'slipRight' },
     p('jab', 'head', 'Jab'),
+    fast('jab', 'Jab'),
     p('cross', 'head', 'Cross'),
+    fast('cross', 'Cross'),
     p('leftHook', 'head', 'Left hook'),
+    fast('leftHook', 'Left hook'),
     p('rightHook', 'head', 'Right hook'),
+    fast('rightHook', 'Right hook'),
     p('leftUppercut', 'head', 'Left uppercut'),
+    fast('leftUppercut', 'Left uppercut'),
     p('rightUppercut', 'head', 'Right uppercut'),
+    fast('rightUppercut', 'Right uppercut'),
     p('jab', 'body', 'Crouch and jab'),
     p('cross', 'body', 'Crouch and cross'),
+    {
+      id: 'combo', prompt: 'Jab, cross, hook', kind: 'combo', target: 'head', reps: CONFIG.model.comboReps,
+      how: `Fast, one punch right after the other, then back to guard. ${CONFIG.model.comboReps} times`,
+    },
   ];
 }
+
+/** The punches of the combo step, in order: jab, cross, then a hook with the lead hand. */
+export function comboTypes(stance: Stance): PunchType[] {
+  return ['jab', 'cross', stance === 'orthodox' ? 'leftHook' : 'rightHook'];
+}
+
+const repsOf = (s: TeachStep) => s.reps ?? CONFIG.model.repsPerMove;
 
 export function handFor(type: PunchType, stance: Stance): Hand {
   if (type === 'jab') return stance === 'orthodox' ? 'left' : 'right';
@@ -80,7 +108,7 @@ export interface TeachStatus {
 }
 
 export interface Profile {
-  version: 6;
+  version: 7;
   samples: Sample[];
   defense: { duck: number; slipLeft: number; slipRight: number };
   learned: string[];
@@ -108,15 +136,19 @@ interface Taught {
 }
 
 /**
- * The guided per-player calibration (about two and a half minutes):
+ * The guided per-player calibration (about three minutes):
  *  1. Rest: guard up and moving, then dropping and raising the hands. Every motion here is a
  *     taught non-punch.
  *  2. Duck and slips, to set this player's thresholds.
  *  3. Each punch standing (a head shot), then jab and cross crouched (body shots), repsPerMove
- *     times each. The crouch reps and the duck set how far the head must dip for a body shot.
- *     The real reps are picked out of the motions (wind-ups and fidgets become non-punch
- *     examples), and reps far from the rest of their move are dropped.
- *  4. Verify: random punches are prompted and read back live with the player's own model. A
+ *     times each. Each standing punch is followed by fastReps of it thrown as fast as possible,
+ *     so the model knows what this player's fast punches look like on camera. The crouch reps
+ *     and the duck set how far the head must dip for a body shot. The real reps are picked out
+ *     of the motions (wind-ups and fidgets become non-punch examples), and reps far from the
+ *     rest of their move are dropped.
+ *  4. A fast jab, cross, hook combo, comboReps times: punches thrown back to back, without a
+ *     pause at guard in between (pickCombos).
+ *  5. Verify: random punches are prompted and read back live with the player's own model. A
  *     wrong or missed read is taught with the right label on the spot and the move comes back
  *     until it is read right verifyPasses times (or runs out of tries).
  */
@@ -153,9 +185,9 @@ export class Teacher {
       return;
     }
     if (this.stepStart !== null && seg.peakT < this.stepStart + CONFIG.model.stepGraceMs) return;
-    if (s.kind === 'punch') {
+    if (s.kind === 'punch' || s.kind === 'combo') {
       this.stepSegs.push(seg);
-      if (seg.hand === handFor(s.type!, this.stance)) this.lastSegEnd = seg.endT;
+      if (s.kind === 'combo' || seg.hand === handFor(s.type!, this.stance)) this.lastSegEnd = seg.endT;
     } else {
       this.add(seg, 'none', s);
     }
@@ -195,29 +227,44 @@ export class Teacher {
     }
     const elapsed = t - this.stepStart!;
     let next = false;
-    if (s.kind === 'punch') {
-      const reps = this.reps(s).length;
-      next = (reps >= CONFIG.model.repsPerMove && t - this.lastSegEnd >= CONFIG.model.settleAfterRepMs) || elapsed >= CONFIG.model.moveTimeoutMs;
+    if (s.kind === 'punch' || s.kind === 'combo') {
+      const reps = this.repCount(s);
+      next = (reps >= repsOf(s) && t - this.lastSegEnd >= CONFIG.model.settleAfterRepMs) || elapsed >= CONFIG.model.moveTimeoutMs;
     } else {
       next = elapsed >= (s.kind === 'rest' ? REST_STEP_MS : DEFENSE_STEP_MS);
     }
     if (!next) return;
     if (s.kind === 'punch') this.finishPunchStep(s);
+    if (s.kind === 'combo') this.finishComboStep(s);
     this.i++;
     this.stepSegs = [];
     this.stepStart = t;
     if (this.i === this.steps.length) this.startVerify(t);
   }
 
-  private reps(s: TeachStep): Segment[] {
-    return pickReps(this.stepSegs, handFor(s.type!, this.stance), CONFIG.model.repsPerMove).reps;
+  private repCount(s: TeachStep): number {
+    if (s.kind === 'combo') return pickCombos(this.stepSegs, this.stance).length;
+    return this.pick(s).reps.length;
+  }
+
+  private pick(s: TeachStep): { reps: Segment[]; rest: Segment[] } {
+    // Fast reps follow each other closely, so only motions nearly touching are one attempt.
+    return pickReps(this.stepSegs, handFor(s.type!, this.stance), repsOf(s), s.fast ? CONFIG.model.fastAttemptGapMs : undefined);
   }
 
   private finishPunchStep(s: TeachStep): void {
-    const { reps, rest } = pickReps(this.stepSegs, handFor(s.type!, this.stance), CONFIG.model.repsPerMove);
+    const { reps, rest } = this.pick(s);
     for (const seg of rest) this.add(seg, 'none', s);
     for (const seg of reps) this.add(seg, kindOf(s.type!), s);
-    if (reps.length) this.learned.push(s.id);
+    if (reps.length && !s.fast) this.learned.push(s.id);
+  }
+
+  /** Teaches the punches matched in each combo; anything else in the step is left out (it may be a punch too). */
+  private finishComboStep(s: TeachStep): void {
+    const types = comboTypes(this.stance);
+    for (const combo of pickCombos(this.stepSegs, this.stance)) {
+      combo.forEach((seg, i) => this.add(seg, kindOf(types[i]), { ...s, type: types[i] }));
+    }
   }
 
   private add(seg: Segment, label: Label, step: TeachStep | null): void {
@@ -242,7 +289,7 @@ export class Teacher {
   // ---- verify ----
 
   private startVerify(t: number): void {
-    const moves = this.steps.filter((s) => s.kind === 'punch' && this.learned.includes(s.id));
+    const moves = this.steps.filter((s) => s.kind === 'punch' && !s.fast && this.learned.includes(s.id));
     for (const m of moves) this.scores.set(m.id, { id: m.id, prompt: m.prompt, ok: 0, tries: 0 });
     this.verifyState = { queue: shuffle(moves), current: null, promptAt: t, attempt: null, result: null, nextAt: t + 600, last: null };
     if (!moves.length) this.finished = true;
@@ -339,11 +386,12 @@ export class Teacher {
         scores,
       };
     }
-    const limit = cur.kind === 'punch' ? CONFIG.model.moveTimeoutMs : cur.kind === 'rest' ? REST_STEP_MS : DEFENSE_STEP_MS;
+    const punch = cur.kind === 'punch' || cur.kind === 'combo';
+    const limit = punch ? CONFIG.model.moveTimeoutMs : cur.kind === 'rest' ? REST_STEP_MS : DEFENSE_STEP_MS;
     return {
       done: false, phase: 'learn', index: this.i, total: this.steps.length, step: cur,
-      reps: cur.kind === 'punch' ? Math.min(CONFIG.model.repsPerMove, this.reps(cur).length) : 0,
-      repsNeeded: cur.kind === 'punch' ? CONFIG.model.repsPerMove : 0,
+      reps: punch ? Math.min(repsOf(cur), this.repCount(cur)) : 0,
+      repsNeeded: punch ? repsOf(cur) : 0,
       progress: Math.min(1, (t - this.stepStart!) / limit),
       verify: null,
       scores,
@@ -356,7 +404,7 @@ export class Teacher {
     const pick = (measured: number, fallback: number) => (measured > fallback * 0.6 ? Math.max(fallback * 0.5, measured * k) : fallback);
     const kept = pruneOutliers(this.taught);
     return {
-      version: 6,
+      version: 7,
       samples: kept.map(toSample),
       defense: {
         duck: pick(this.extreme.duck, d.duckDrop),
@@ -405,12 +453,12 @@ function shuffle<T>(a: T[]): T[] {
  * wind-up comes first). Attempts much smaller than the typical one (fidgeting, adjusting the
  * guard) do not count. Returns at most n reps, in time order.
  */
-export function pickReps(segs: Segment[], hand: Hand, n: number): { reps: Segment[]; rest: Segment[] } {
+export function pickReps(segs: Segment[], hand: Hand, n: number, gapMs: number = CONFIG.model.attemptGapMs): { reps: Segment[]; rest: Segment[] } {
   const mine = segs.filter((s) => s.hand === hand).sort((a, b) => a.peakT - b.peakT);
   const groups: Segment[][] = [];
   for (const s of mine) {
     const g = groups.at(-1);
-    if (g && s.startT - g.at(-1)!.endT <= CONFIG.model.attemptGapMs) g.push(s);
+    if (g && s.startT - g.at(-1)!.endT <= gapMs) g.push(s);
     else groups.push([s]);
   }
   const best = groups.map(attemptRep);
@@ -418,6 +466,39 @@ export function pickReps(segs: Segment[], hand: Hand, n: number): { reps: Segmen
   const typical = sorted[Math.floor(sorted.length / 2)] ?? 0;
   const reps = best.filter((s) => s.travel >= typical * CONFIG.model.minRepFraction).slice(0, n);
   return { reps, rest: segs.filter((s) => !reps.includes(s)) };
+}
+
+/**
+ * Finds the combos thrown during the combo step. Motions (both hands) with peaks less than
+ * comboGapMs apart are one attempt; in each, the punches are matched in order (comboTypes): the
+ * first big motion of the jab hand, then the biggest motion of the cross hand after it, then the
+ * biggest motion of the hook hand after that. "Big" is at least attemptRepFraction of the biggest
+ * motion of that hand in the attempt. Attempts missing a punch are skipped. Returns at most
+ * comboReps combos, each as [jab, cross, hook] segments.
+ */
+export function pickCombos(segs: Segment[], stance: Stance): Segment[][] {
+  const hands = comboTypes(stance).map((t) => handFor(t, stance));
+  const all = [...segs].sort((a, b) => a.peakT - b.peakT);
+  const groups: Segment[][] = [];
+  for (const s of all) {
+    const g = groups.at(-1);
+    if (g && s.peakT - g.at(-1)!.peakT <= CONFIG.model.comboGapMs) g.push(s);
+    else groups.push([s]);
+  }
+  const out: Segment[][] = [];
+  for (const g of groups) {
+    const big = (hand: Hand) => {
+      const max = Math.max(0, ...g.filter((s) => s.hand === hand).map((s) => s.travel));
+      return g.filter((s) => s.hand === hand && s.travel >= max * CONFIG.model.attemptRepFraction);
+    };
+    const jab = big(hands[0])[0];
+    const after = (list: Segment[], t: number) => list.filter((s) => s.peakT > t);
+    const largest = (list: Segment[]) => list.reduce<Segment | undefined>((b, s) => (!b || s.travel > b.travel ? s : b), undefined);
+    const cross = jab && largest(after(g.filter((s) => s.hand === hands[1]), jab.peakT));
+    const hook = cross && largest(after(g.filter((s) => s.hand === hands[2] && s !== jab), cross.peakT));
+    if (jab && cross && hook) out.push([jab, cross, hook]);
+  }
+  return out.slice(0, CONFIG.model.comboReps);
 }
 
 /** The punch in one attempt: the last motion travelling at least attemptRepFraction of the biggest. */

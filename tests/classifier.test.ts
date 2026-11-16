@@ -136,6 +136,36 @@ describe('punch classification', () => {
     expect(punches).toEqual([]);
   });
 
+  it('reads every punch thrown twice as fast, exactly once', () => {
+    // The synthetic arm plays twice as fast while frames still come at 30 fps: the extension takes
+    // 70 ms, about two frames.
+    for (const [type, hand, target] of cases) {
+      const c = new Classifier(cal);
+      const got: Punch[] = [];
+      for (const s of throwSeq(type, hand, target)) got.push(...c.update({ ...synthFrame({ ...s, t: s.t * 2 }), t: s.t }).punches);
+      expect(got.map((p) => `${p.type}:${p.target}`), `${type} ${target}`).toEqual([`${type}:${target}`]);
+    }
+  });
+
+  it('fires both punches of a double jab thrown before the hand is back at guard', () => {
+    // The second jab leaves while the first is still on its way back; the peaks are 300 ms apart.
+    const seq: SynthState[] = [];
+    for (let t = 0; t < 1000; t += 1000 / FPS) {
+      seq.push({ t, defense: NO_DEFENSE, punch: { type: 'jab', hand: 'left', target: 'head', startT: t < 400 ? 100 : 400, windupMs: 0 } });
+    }
+    expect(run(seq).punches.map((p) => p.type)).toEqual(['jab', 'jab']);
+  });
+
+  it('fires every punch of a fast jab, cross, hook combo', () => {
+    const order: [PunchType, 'left' | 'right'][] = [['jab', 'left'], ['cross', 'right'], ['leftHook', 'left']];
+    const seq: SynthState[] = [];
+    for (let t = 0; t < 1500; t += 1000 / FPS) {
+      const i = Math.max(0, Math.min(2, Math.floor((t - 100) / 330)));
+      seq.push({ t, defense: NO_DEFENSE, punch: { type: order[i][0], hand: order[i][1], target: 'head', startT: 100 + i * 330, windupMs: 0 } });
+    }
+    expect(run(seq).punches.map((p) => p.type)).toEqual(['jab', 'cross', 'leftHook']);
+  });
+
   it('locks the hand out until it returns to guard and the cooldown passes', () => {
     const seq: SynthState[] = [];
     for (let t = 0; t < 1400; t += 1000 / FPS) {

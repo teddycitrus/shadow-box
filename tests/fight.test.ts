@@ -105,7 +105,7 @@ describe('camera player, calibration to fight', async () => {
     teachThrough(input, handle);
     expect(input.calibrated).toBe(true);
     expect(input.learned).toHaveLength(8);
-    expect(store.get('shadowbox:profile:v6')).toBeTruthy();
+    expect(store.get('shadowbox:profile:v7')).toBeTruthy();
   });
 
   it('lands the punches it was taught in a practice fight against the bot', () => {

@@ -26,16 +26,18 @@ A browser boxing game you play with your body. A webcam and MediaPipe pose track
 
 1. Pick Orthodox or Southpaw first. Teaching uses your stance to know which hand throws the jab.
 2. Hold your guard (both gloves up by your face) steady for 2 seconds. The game measures your shoulder width, arm length, hand size and guard position and scales every threshold to your body.
-3. Teach your punches, about two and a half minutes. An overlay on the webcam walks through:
+3. Teach your punches, about three minutes. An overlay on the webcam walks through:
    - **Rest**, 6 s each: guard up and moving without punching, then dropping your hands and bringing them back. These motions are learned as non-punches.
    - **Duck, slip left, slip right**, 3.5 s each. The duck comes first so your crouch depth is known before the punches.
    - **8 punches** in turn: jab, cross, left hook, right hook, left uppercut, right uppercut, aimed at the face standing tall (head shots), then crouch and jab, crouch and cross (dip your head like a duck, then punch: body shots). Throw each one 5 times, back to guard after each (a step moves on after 5 reps or 15 s). Wind-ups and fidgets around each rep are learned as non-punches, and a rep far from the rest of its move is dropped. The crouch reps set how far your head has to dip for a body shot (see Moves).
+   - **Fast**: right after each standing punch, the same punch 3 times as fast and sharp as you can. A fast punch crosses the screen in two or three camera frames and looks different from a slow one, so the model learns both.
+   - **Combo**: jab, cross, hook, fast, one punch right after the other, 3 times. Each punch of a combo is taught as its own rep, so punches thrown back to back are recognized too.
    - **Check**: random punches from the list are prompted and read back live with your new model. A wrong or missed read is taught on the spot with the right label (a punch read as no punch also drops the two non-punch examples nearest to it that outvoted it, such as an uppercut wind-up that looks like a body jab), and the move comes back until it is read right twice (at most 4 tries). The right punch at the wrong target is called out ("Read as body. Stand tall for a head shot" or "Read as head. Crouch lower for a body shot") and counted per move. The overlay ends with how often each move was read right; the lobby lists any move that stayed unreliable.
 
    Punches do not reach the match during this step.
 4. Press Ready.
 
-The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v6`) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
+The result is a personal profile, saved in the browser (`localStorage` key `shadowbox:profile:v7`; profiles from before the fast steps are not reused) and reused the next time you calibrate, so teaching only runs once. The lobby shows whether you are using your own model or the default rules. **Teach my punches** runs the teaching step again, and **Skip, use defaults** (shown while teaching) deletes the saved profile and switches to the hand-written rules. Use Recalibrate if tracking feels off; it redoes the guard hold and keeps your profile.
 
 ### Moves
 
@@ -50,7 +52,7 @@ The result is a personal profile, saved in the browser (`localStorage` key `shad
 | Duck | Drop your head well down. |
 | Slip left / right | Move your head to the side. |
 
-A punch fires once, as soon as the hand turns back from its furthest point (one frame after the peak, not at the end of the retraction). That hand is locked until it comes back toward where it started (or settles somewhere new) and a short cooldown passes (250 ms, 450 ms when gassed).
+A punch fires once, as soon as the hand turns back from its furthest point (one frame after the peak, not at the end of the retraction). That hand is then free again once it comes back toward where it started, settles somewhere new, or turns round on the way back and drives out again (a double jab or a combo, without going all the way home). Punches from one hand are at least 250 ms apart (450 ms when gassed).
 
 ### Rules
 
@@ -223,7 +225,7 @@ Punch pipeline, per hand:
 
 0. **Frames:** `PoseTracker` (`client/src/tracking/pose.ts`) runs one detection per new camera frame (`requestVideoFrameCallback`, or `requestAnimationFrame` with a `currentTime` check), GPU first with a CPU fallback. Each frame is stamped with the camera's capture time (falling back to its presentation time), so velocities follow the real frame spacing.
 1. **Track:** each hand is followed on screen in its own frame: origin between the shoulders, x toward the body midline (mirrored for the left hand so both hands share one frame), y up, in sw. While the hand is slower than 1.5 sw/s its rest position follows it.
-2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. Once the hand turns back (one frame past the furthest point and heading home, or nearly stopped), the motion so far is read right away and fires if it is a punch. Otherwise it is followed on and read again when it ends: back to 80% of that distance, stalled for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts) or has settled for 350 ms, so a retraction never becomes a motion of its own.
+2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. Once the hand turns back (one frame past the furthest point and heading home, or nearly stopped), the motion so far is read right away and fires if it is a punch. Otherwise it is followed on and read again when it ends: back to 80% of that distance, stalled for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts), or has settled for 350 ms (100 ms after a motion that did not fire), so a retraction never becomes a motion of its own. A hand on its way back is also free when it turns round (nearly stops, or leaves at a right angle or more to how it came in) and moves 0.35 sw away from that point at punch speed; after a fired punch it must have come back past 80% of the punch first. That new motion is measured from the turning point, and its travel for the gate from where the hand rested before, so a double jab thrown from a half retraction still counts. A hand fires at most once per 250 ms (450 ms gassed).
 3. **Gate:** the motion must travel at least 0.55 sw and reach 4 sw/s (speeds measured over frame gaps longer than 50 ms are scaled up, by at most 1/0.75, since they average over more of the punch). A mostly vertical motion while the other hand moves the same way by at least 60% as much (raising or dropping the guard) is not a punch. This applies whichever classifier is active.
 4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the head dip against the player's body dip gives the target (see Moves). When the population prior is available its samples join the player's own at 1.3 times their distance. Without a profile the hand-written rules decide, with the default body dip of 0.4 sw.
 5. **Fire:** the punch is sent with the peak time, on the frame after the peak in most cases.
@@ -234,7 +236,19 @@ Defense, every frame:
 - **Duck and slip** fire when the offset passes 0.55 sw down or 0.5 sw sideways. The teach step personalizes each to half of the deepest duck or slip you showed, if it reached at least 60% of the default, and never below half the default. Slips are ignored during a hand motion and for 300 ms after, since punching moves the head. Ducks are not, and never block a punch: a crouched body shot fires as a punch and can read as a duck at the same time.
 - **Guard** needs both hands out of a motion, slow and up by the face. The height and head-distance limits are the defaults or, if looser, your calibrated guard position plus 0.3 sw, with 0.2 sw of hysteresis once held.
 
-Accuracy is measured against hand-checked rep times (`scripts/eval-gt.ts`) on the 12 recorded clips in `tests/fixtures/` (one orthodox player, 39 reps) and on a real teach session (22 reps), replaying the live classifier frame by frame (`scripts/eval-calibration.ts`). Trained on 4 of 5 reps per move, 87% of fixture punches come out exactly right (type and head/body) with 1 extra fire, and the 4 defense clips fire nothing; trained on the first 3 reps, 73%. On the teach session, where most moves only got two real reps and the camera sat high, 77% of types are right. Every recorded rep was thrown standing (including the ones aimed low before the crouch rule), so each is scored as a head shot. Head or body alone (`scripts/eval-target.ts`, `tests/target.test.ts`): all 35 fixture reps and all 21 teach-session reps read as head, with the default body dip and with the 0.55 sw the duck clip would set (the deepest head dip on any of them is 0.28 sw, a low jab). The recorded duck clip fires at most one punch. There is no recorded crouch-punch data yet; body shots are tested with synthetic poses that crouch through the punch. Punches fire a median 60 ms (p90 124 ms) after the hand-checked peak on the fixtures and 48 ms (p90 113 ms) on the teach session, recorded at about 25 fps. The segmenter finds 35 of 39 fixture reps at full frame rate, 35 at half and 34 at a third (`scripts/eval-speed.ts`); trained at full rate, 30 of 35 and 28 of 34 of those are read right. Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
+Accuracy is measured against hand-checked rep times (`scripts/eval-gt.ts`) on the 12 recorded clips in `tests/fixtures/` (one orthodox player, 39 reps) and on a real teach session (22 reps), replaying the live classifier frame by frame (`scripts/eval-calibration.ts`). Trained on 4 of 5 reps per move, 90% of fixture punches come out exactly right (type and head/body) with 1 extra fire, and the 4 defense clips fire nothing; trained on the first 3 reps, 93% (2 reps, 78%). On the teach session, where most moves only got two real reps and the camera sat high, 77% of types are right. Every recorded rep was thrown standing (including the ones aimed low before the crouch rule), so each is scored as a head shot. Head or body alone (`scripts/eval-target.ts`, `tests/target.test.ts`): all 35 fixture reps and all 21 teach-session reps read as head, with the default body dip and with the 0.55 sw the duck clip would set (the deepest head dip on any of them is 0.28 sw, a low jab). The recorded duck clip fires at most one punch. There is no recorded crouch-punch data yet; body shots are tested with synthetic poses that crouch through the punch. Punches fire a median 67 ms (p90 124 ms) after the hand-checked peak on the fixtures and 48 ms (p90 113 ms) on the teach session, recorded at about 25 fps. The segmenter finds 37 of 39 fixture reps at full frame rate, at half and at a third (`scripts/eval-speed.ts`); trained at full rate, 32 of 37 and 30 of 37 of those are read right. Ducks are detected 5 of 5 with no ducks in the punch clips; slips 4 of 5 left and 3 of 5 right.
+
+Fast punches are measured by replaying the fixture clips sped up (`scripts/eval-fast.ts`, `scripts/fast-sim.ts`): time runs 2 or 3 times faster around each rep while frames still come at the recorded rate, optionally with extra landmark lag and a wrist that trails and loses visibility when it moves fast, or with the whole clip sped up so punches follow each other closely. Each rep is read by a model trained on every other rep. Reps fired (read right), out of 39:
+
+| Replay | Before | Now, normal teach | Now, with the fast pass |
+| --- | --- | --- | --- |
+| Recorded pace | 35 (34) | 37 (35) | 36 (34) |
+| Punches 3x faster | 31 (23) | 34 (26) | 37 (34) |
+| 3x, lag and wrist blur | 19 (11) | 19 (12) | 28 (24) |
+| Whole clip 2x (doubles) | 16 (14) | 35 (29) | 35 (29) |
+| Whole clip 3x, blur | 2 (2) | 19 (11) | 27 (23) |
+
+No replay fires anything in the sped-up defense clips with the fast pass, and none fires away from the reps. The main fix was the return logic: a hand that never paused at guard for 350 ms after a motion stayed locked, so quick punches after the first were lost; the fast pass fixes most of the rest, where the model read a two-frame punch as no punch.
 
 ## Getting Started
 
@@ -291,6 +305,8 @@ npx tsx scripts/eval-calibration.ts        # end to end: replayed calibrations s
 npx tsx scripts/eval-model.ts --verbose    # k-NN leave-one-out per motion, fixtures and teach session
 npx tsx scripts/eval-target.ts             # head or body per rep, the live rule against the alternatives
 npx tsx scripts/eval-speed.ts              # reps caught and read with frames dropped
+npx tsx scripts/eval-fast.ts               # fast punches and doubles: clips sped up, with lag and wrist blur
+npx tsx scripts/dump-fast.ts jab-head 2 whole  # every motion decision in one sped-up clip
 npx tsx scripts/eval-session.ts            # train on a teach session, replay a play session
 npx tsx scripts/eval-defense.ts            # guard, duck and slip onsets per clip
 npx tsx scripts/dump-segments.ts jab-head  # every motion segment's features in matching clips
@@ -314,7 +330,7 @@ npx tsx scripts/analyze-fixtures.ts jab    # every rule decision and defense cha
 | --- | --- |
 | `?keys=1` | Keyboard mode, no camera. Keys below. |
 | `?debug=1` | Shows classifier features, defense state and match numbers, plus the tracker's delegate, pose model, frame rate and detection time. In a fight it also shows the last punch decision (and whether it was blocked because you could not punch), the last punch sent, whether the match took it, and how it landed. |
-| `?model=lite` / `?model=full` | Pins the pose model. By default tracking starts on full and drops to lite if it stays under 28 fps for 2 s because detection is the bottleneck (camera frames skipped or detection slower than 28 fps). |
+| `?model=lite` / `?model=full` | Pins the pose model. By default tracking starts on full and tries lite once, for 2 s, full has tracked under 28 fps or missed more than 15% of the camera's frames because detection is the bottleneck (camera frames skipped or detection slower than the camera). Lite is kept only if it then tracks at least 1.2 times as many frames per second; otherwise full comes back for good. |
 | `?record=1` | Shows a guided recorder that saves labelled clips of every move into `tests/fixtures/`. See [FIXTURES.md](FIXTURES.md). |
 
 Keyboard mode keys:
@@ -399,7 +415,9 @@ scripts/
   audio-manifest.mjs  writes dist/client/audio-manifest.json at build time
   gen-audio.ts        optional ElevenLabs audio generation
   eval-*.ts           classifier evaluation on recorded fixtures (eval-core.ts is shared with the tests)
+  fast-sim.ts         replays a recorded clip with faster punches, tracker lag and wrist blur
   dump-segments.ts    prints motion segment features
+  dump-fast.ts        prints every motion decision in a sped-up clip
   analyze-fixtures.ts prints classifier decisions per clip
 tests/                Vitest suites, plus recorded fixtures in tests/fixtures/
 vite.config.ts        Vite config, with a dev-only endpoint that saves recorder clips
