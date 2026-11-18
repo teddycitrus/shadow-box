@@ -38,3 +38,9 @@ export const TEACH_REPS: Rep[] = [
   ...[54.49, 56.69, 57.59, 58.46, 60.14, 61.2].map((t) => ({ type: 'jab' as const, target: 'body' as const, t })),
   ...[63.35, 64.45].map((t) => ({ type: 'cross' as const, target: 'body' as const, t })),
 ];
+
+/**
+ * Punch reps in the real fast clips (tests/fixtures/fast/<name>.json, keyed by <name>), found with
+ * scripts/label-reps.ts and confirmed against the clip's webm. Clips without an entry are not scored.
+ */
+export const FAST_REPS: Record<string, { type: PunchType; t: number }[]> = {};

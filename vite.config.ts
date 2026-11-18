@@ -2,7 +2,11 @@
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { defineConfig, type Plugin } from 'vite';
 
-/** Dev only: lets the ?record=1 tuner save labelled clips straight into tests/fixtures/. */
+/**
+ * Dev only: lets the ?record=1 tuner save labelled clips straight into tests/fixtures/.
+ * <name>.json goes to tests/fixtures/, sessions/ and fast/ JSON to their folders, <name>.webm to
+ * tests/fixtures/video/ and fast/<name>.webm next to its JSON in tests/fixtures/fast/.
+ */
 const fixtureWriter: Plugin = {
   name: 'fixture-writer',
   apply: 'serve',
@@ -14,7 +18,7 @@ const fixtureWriter: Plugin = {
     });
     server.middlewares.use('/__fixtures/', (req, res) => {
       const name = decodeURIComponent((req.url ?? '').slice(1));
-      if (req.method !== 'POST' || !/^(sessions\/)?[\w-][\w.-]*\.json$/.test(name) || name.includes('..')) {
+      if (req.method !== 'POST' || !/^((sessions|fast)\/)?[\w-][\w.-]*\.json$|^(fast\/)?[\w-][\w.-]*\.webm$/.test(name) || name.includes('..')) {
         res.statusCode = 400;
         res.end();
         return;
@@ -22,8 +26,9 @@ const fixtureWriter: Plugin = {
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
-        mkdirSync(name.startsWith('sessions/') ? 'tests/fixtures/sessions' : 'tests/fixtures', { recursive: true });
-        writeFileSync(`tests/fixtures/${name}`, Buffer.concat(chunks));
+        const path = `tests/fixtures/${name.endsWith('.webm') && !name.includes('/') ? `video/${name}` : name}`;
+        mkdirSync(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+        writeFileSync(path, Buffer.concat(chunks));
         res.end('ok');
       });
     });

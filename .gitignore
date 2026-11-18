@@ -10,3 +10,5 @@ recordings/
 tests/fixtures/sessions/
 .wrangler/
 data/
+tests/fixtures/video/
+tests/fixtures/fast/*.webm
