@@ -125,7 +125,7 @@ The server owns the match. Clients track the pose, classify moves locally, and s
 flowchart LR
   subgraph PA["Player client"]
     Cam(["Webcam"])
-    MP["MediaPipe Pose Landmarker<br/><sub>33 landmarks per frame, local WASM</sub>"]
+    MP["MediaPipe Pose Landmarker<br/><sub>33 landmarks per frame, local WASM,<br/>main thread or ?worker=1</sub>"]
     CL["Classifier<br/><sub>segments, gate, k-NN or rules, guard/duck/slip</sub>"]
     Link["OnlineLink<br/><sub>clock sync, reconnect, rejoin token</sub>"]
     View["Three.js view<br/><sub>first person, HUD, sound</sub>"]
@@ -269,9 +269,9 @@ flowchart LR
 
 Punch pipeline, per hand:
 
-0. **Frames:** `PoseTracker` (`client/src/tracking/pose.ts`) runs one detection per new camera frame (`requestVideoFrameCallback`, or `requestAnimationFrame` with a `currentTime` check), GPU first with a CPU fallback. Each frame is stamped with the camera's capture time (falling back to its presentation time), so velocities follow the real frame spacing.
+0. **Frames:** `PoseTracker` (`client/src/tracking/pose.ts`) runs one detection per new camera frame (`requestVideoFrameCallback`, or `requestAnimationFrame` with a `currentTime` check), GPU first with a CPU fallback. Each frame is stamped with the camera's capture time (falling back to its presentation time), so velocities follow the real frame spacing. With `?worker=1` detection runs in a Web Worker instead, fed camera frames directly (a transferred `MediaStreamTrackProcessor` stream in Chrome and Edge, else bitmaps), newest frame first, with the main thread as fallback. The tracker counts, per second, camera frames delivered, frames tracked, frames skipped (the model or page was busy) and frames with no pose found (blur, framing); the setup screen warns when the camera runs under about 28 fps or tracking skips 10% of frames.
 1. **Track:** each hand is followed on screen in its own frame: origin between the shoulders, x toward the body midline (mirrored for the left hand so both hands share one frame), y up, in sw. While the hand is slower than 1.5 sw/s its rest position follows it.
-2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. Once the hand turns back (one frame past the furthest point and heading home, or nearly stopped), the motion so far is read right away and fires if it is a punch. Otherwise it is followed on and read again when it ends: back to 80% of that distance, stalled for two frames, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts), or has settled for 350 ms (100 ms after a motion that did not fire), so a retraction never becomes a motion of its own. A hand on its way back is also free when it turns round (nearly stops, or leaves at a right angle or more to how it came in) and moves 0.35 sw away from that point at punch speed; after a fired punch it must have come back past 80% of the punch first. That new motion is measured from the turning point, and its travel for the gate from where the hand rested before, so a double jab thrown from a half retraction still counts. A hand fires at most once per 250 ms (450 ms gassed).
+2. **Segment:** a motion starts once the hand moves away from rest past 0.3 sw, measured from the last frame it was near rest. The peak is the furthest point from rest. Once the hand turns back (one frame and 25 ms past the furthest point and heading home, or nearly stopped), the motion so far is read right away and fires if it is a punch. Otherwise it is followed on and read again when it ends: back to 80% of that distance, stalled for two frames and 40 ms, or after 550 ms. Afterwards the hand is free again once it is back home along the line it went out on (a fast swing through rest counts), or has settled for 350 ms (100 ms after a motion that did not fire), so a retraction never becomes a motion of its own. A hand on its way back is also free when it turns round (nearly stops, or leaves at a right angle or more to how it came in) and moves 0.35 sw away from that point at punch speed; after a fired punch it must have come back past 80% of the punch first. That new motion is measured from the turning point, and its travel for the gate from where the hand rested before, so a double jab thrown from a half retraction still counts. A hand fires at most once per 250 ms (450 ms gassed). Every rule that counts frames also has a time floor, so a 50 to 60 fps camera behaves like the 25 to 30 fps one the thresholds were tuned on: velocities and frame-to-frame comparisons span at least 25 ms, a stall lasts 2 frames and 40 ms, the early read waits 1 frame and 25 ms past the peak, and a segment's path runs at least 80 ms past it. At 25 to 30 fps these reduce to the single-frame rules.
 3. **Gate:** the motion must travel at least 0.55 sw and reach 4 sw/s (speeds measured over frame gaps longer than 50 ms are scaled up, by at most 1/0.75, since they average over more of the punch). A mostly vertical motion while the other hand moves the same way by at least 60% as much (raising or dropping the guard) is not a punch. This applies whichever classifier is active.
 4. **Decide:** with a saved profile, a k-NN (`client/src/tracking/model.ts`) compares a 17-number on-screen shape of the motion (displacement, where the fist ends relative to the nose, forearm direction and elbow travel, hand growth, path bend, wind-up, duration, the other hand's motion, start position, head drop) against the player's own taught samples of the same hand. Features are standardized with a floor so near-constant ones cannot dominate. World depth and the 3D elbow angle are left out: MediaPipe gets them wrong too often on fast punches. Labels are `straight`, `hook`, `uppercut` or `none`; hand and stance give the exact punch, and the head dip against the player's body dip gives the target (see [Moves](#moves)). When the population prior is available its samples join the player's own at 1.3 times their distance. Without a profile the hand-written rules decide, with the default body dip of 0.4 sw.
 5. **Fire:** the punch is sent with the peak time, on the frame after the peak in most cases.
@@ -297,6 +297,8 @@ Fast punches are measured by replaying the fixture clips sped up (`scripts/eval-
 | Whole clip 3x, blur | 2 (2) | 19 (11) | 27 (23) |
 
 No replay fires anything in the sped-up defense clips with the fast pass, and none fires away from the reps. The main fix was the return logic: a hand that never paused at guard for 350 ms after a motion stayed locked, so quick punches after the first were lost; the fast pass fixes most of the rest, where the model read a two-frame punch as no punch.
+
+On a faster camera (`scripts/eval-rate.ts`: the clips interpolated to about 52 and 62 fps, with the recorded landmark jitter added back), the same reps fire and read right within one of the native rate, and punches fire a median 39 and 32 ms after the peak against 42 ms native (19 and 16 ms before the time floors, when one jittery frame could end a motion). Frames are lost more in real play than in calibration: in the recorded play sessions 5.5% of frame gaps are over 60 ms against 1.3% in the teach session, so a 5-frame punch has about a 1 in 4 chance of missing a frame. The tracker's skipped and lost counts tell those two causes apart. The fast-punch replays above are simulated from teach-pace clips, and a smoothing change that scored better there scored clearly worse on the real teach session, so real fast clips (`scripts/eval-real-fast.ts`) are the check that counts.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -367,7 +369,7 @@ Free plan limits, reset daily at 00:00 UTC: 100,000 Worker requests and 100,000 
 ### Setup
 
 1. Put the laptop at chest height and stand 1.5 to 2 m away.
-2. Use good light in front of you, not behind you.
+2. Use good light in front of you, not behind you. Turn off low light compensation in your camera settings: in a dim room many webcams drop to 25 or 15 fps and blur fast punches. The webcam preview shows a notice when the camera or tracking runs slow.
 3. Keep your head, shoulders, elbows and hands in frame. The lobby tells you to move closer, step back or raise the camera.
 
 ### Calibration
@@ -435,9 +437,12 @@ All numbers come from `shared/rules.ts`.
 | Flag | Effect |
 | --- | --- |
 | `?keys=1` | Keyboard mode, no camera. Keys below. |
-| `?debug=1` | Shows classifier features, defense state and match numbers, plus the tracker's delegate, pose model, frame rate and detection time. In a fight it also shows the last punch decision (and whether it was blocked because you could not punch), the last punch sent, whether the match took it, and how it landed. |
+| `?debug=1` | Shows classifier features, defense state and match numbers, plus the tracker's delegate, pose model, tracked and delivered frame rate, detection time, frames skipped and lost per second, and the camera notice state; debug sessions log these once a second. In a fight it also shows the last punch decision (and whether it was blocked because you could not punch), the last punch sent, whether the match took it, and how it landed. |
 | `?model=lite` / `?model=full` | Pins the pose model. By default tracking starts on full and tries lite once, for 2 s, full has tracked under 28 fps or missed more than 15% of the camera's frames because detection is the bottleneck (camera frames skipped or detection slower than the camera). Lite is kept only if it then tracks at least 1.2 times as many frames per second; otherwise full comes back for good. |
-| `?record=1` | Shows a guided recorder that saves labelled clips of every move into `tests/fixtures/`. See [FIXTURES.md](FIXTURES.md). |
+| `?worker=1` | Runs pose detection in a Web Worker, off the main thread that renders the game. Falls back to the main thread if the worker cannot start. Off by default until it is measured against the frames skipped during play (see `?debug=1`). |
+| `?replay=<url>` | Tracks a video file instead of the camera, for re-running recorded clips through the whole pipeline. Plays at `?replayRate=` (default 0.5) and stamps frames with video time, so results do not depend on machine speed. Pins the pose model. |
+| `?exposure=<ms>` | Sets a manual camera exposure (for example `8`) to cut motion blur, if the camera supports it; the image gets darker. Auto exposure is restored when tracking stops or the page closes. |
+| `?record=1` | Shows a guided recorder that saves labelled clips of every move into `tests/fixtures/`, then fast punches, doubles, combos and free boxing into `tests/fixtures/fast/`, each with its raw webcam video. See [FIXTURES.md](FIXTURES.md). |
 
 ### Keyboard Mode
 
@@ -507,6 +512,9 @@ npx tsx scripts/eval-model.ts --verbose    # k-NN leave-one-out per motion, fixt
 npx tsx scripts/eval-target.ts             # head or body per rep, the live rule against the alternatives
 npx tsx scripts/eval-speed.ts              # reps caught and read with frames dropped
 npx tsx scripts/eval-fast.ts               # fast punches and doubles: clips sped up, with lag and wrist blur
+npx tsx scripts/eval-rate.ts               # the clips upsampled to 50 to 60 fps with recorded jitter, against native rate
+npx tsx scripts/eval-real-fast.ts          # real fast and combo clips in tests/fixtures/fast/ against their hand-checked reps
+npx tsx scripts/label-reps.ts tests/fixtures/fast/orthodox-combo-12.json  # candidate rep peaks to check against the clip's video
 npx tsx scripts/dump-fast.ts jab-head 2 whole  # every motion decision in one sped-up clip
 npx tsx scripts/eval-session.ts            # train on a teach session, replay a play session
 npx tsx scripts/eval-defense.ts            # guard, duck and slip onsets per clip
@@ -531,7 +539,7 @@ client/
     net/              MatchLink interface and the WebSocket OnlineLink
     practice/         Bot, PracticeLink and the title screen DemoLink
     scene/            Three.js stage, arena, avatars, first-person gloves
-    tracking/         PoseTracker, calibration, classifier, k-NN model, teach step, data sharing, keyboard input, synthetic poses
+    tracking/         PoseTracker and its Web Worker, calibration, classifier, k-NN model, teach step, data sharing, keyboard input, synthetic poses
     ui/               HUD, announcer events, webcam preview, fixture recorder, DOM helpers
     views/            player (first person) and spectator views
 server/
@@ -554,6 +562,7 @@ scripts/
   gen-audio.ts        optional ElevenLabs audio generation
   eval-*.ts           classifier evaluation on recorded fixtures (eval-core.ts is shared with the tests)
   fast-sim.ts         replays a recorded clip with faster punches, tracker lag and wrist blur
+  label-reps.ts       finds candidate rep peaks in a recorded clip, for hand-checking
   dump-segments.ts    prints motion segment features
   dump-fast.ts        prints every motion decision in a sped-up clip
   analyze-fixtures.ts prints classifier decisions per clip
