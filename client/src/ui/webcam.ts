@@ -4,6 +4,7 @@ import { h } from './dom.ts';
 const BONES: [number, number][] = [
   [0, 7], [0, 8], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [15, 19], [16, 20], [11, 23], [12, 24], [23, 24],
 ];
+const DISMISS_KEY = 'shadowbox:cameraNotice:dismissed';
 
 /** Mirrored webcam preview with the tracked skeleton drawn over it. */
 export class WebcamBox {
@@ -11,9 +12,31 @@ export class WebcamBox {
   private canvas = h('canvas');
   private ctx = this.canvas.getContext('2d')!;
 
+  /** Camera quality notice over the preview; shrinks to a chip during a match. */
+  private noticeEl = h('div', { class: 'cam-notice', role: 'status' });
+  private noticeKey = '';
+  private dismissed = sessionStorage.getItem(DISMISS_KEY) === '1';
+
   constructor(video: HTMLVideoElement | null, placeholder?: HTMLElement) {
-    if (video) this.root.append(video, this.canvas);
+    if (video) this.root.append(video, this.canvas, this.noticeEl);
     else if (placeholder) this.root.append(placeholder);
+  }
+
+  notice(copy: { title: string; line: string; chip: string } | null): void {
+    const show = !!copy && !this.dismissed;
+    this.noticeEl.classList.toggle('on', show);
+    const key = show ? JSON.stringify(copy) : '';
+    if (key === this.noticeKey) return;
+    this.noticeKey = key;
+    if (!show) return void this.noticeEl.replaceChildren();
+    const close = h('button', { class: 'cam-notice-x', type: 'button', 'aria-label': 'Dismiss' }, 'x');
+    close.addEventListener('click', () => {
+      this.dismissed = true;
+      sessionStorage.setItem(DISMISS_KEY, '1');
+      this.notice(null);
+    });
+    this.noticeEl.title = copy.line;
+    this.noticeEl.replaceChildren(h('b', {}, copy.title), h('span', { class: 'cam-notice-chip' }, copy.chip), h('p', {}, copy.line), close);
   }
 
   draw(f: PoseFrame | null, video: HTMLVideoElement | null, good: boolean): void {

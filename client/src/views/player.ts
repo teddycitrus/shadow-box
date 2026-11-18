@@ -15,6 +15,7 @@ import { Hud } from '../ui/hud.ts';
 import { tuner } from '../ui/tuner.ts';
 import type { SessionLog } from '../tracking/session.ts';
 import { WebcamBox } from '../ui/webcam.ts';
+import { initialNotice, noticeCopy, noticeDebug, noticeIssue, stepNotice } from '../ui/camera-notice.ts';
 
 const EYE = new THREE.Vector3(0, 1.58, 0.8);
 const RESULTS_MS = 8_000;
@@ -180,6 +181,8 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
   let wasCalibrated = false;
   let wasTeaching = false;
   let resultsUntil = 0;
+  let camNotice = initialNotice;
+  let nextNoticeAt = 0;
   const tmp = new THREE.Vector3();
 
   let teachKey = '';
@@ -359,6 +362,13 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       const s = input.status;
       const good = input.calibrated;
       webcam.draw(input.frame, input.video, good);
+      const now = performance.now();
+      if (now >= nextNoticeAt) {
+        nextNoticeAt = now + 1000;
+        camNotice = stepNotice(camNotice, input.health, now);
+        const issue = noticeIssue(camNotice);
+        webcam.notice(issue && noticeCopy(issue));
+      }
       const ts = input.teach;
       const teaching = !!ts && !ts.done && !good;
       if (teaching) {
@@ -398,7 +408,7 @@ export function startPlayer(app: HTMLElement, link: MatchLink, input: InputSourc
       // No throw event within a moment of sending means the match turned the punch down.
       if (sentPunch && sentPunch.accepted === null && performance.now() - sentPunch.at > 600) sentPunch.accepted = false;
       debug.textContent = `${debugText(input, snap)}
-${sentText(sentPunch, snap?.fighters[mySlot] ?? null)}`;
+${input.health ? `${noticeDebug(camNotice)}\n` : ''}${sentText(sentPunch, snap?.fighters[mySlot] ?? null)}`;
     }
   });
 

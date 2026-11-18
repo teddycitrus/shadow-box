@@ -74,6 +74,7 @@ function howTo(): HTMLElement {
         h('ol', { class: 'steps' },
           h('li', {}, 'Put the laptop at chest height and stand 1.5 to 2 m away.'),
           h('li', {}, 'Use good light in front of you, not behind you.'),
+          h('li', {}, 'Turn off low light compensation in your camera settings, so the camera keeps its full frame rate.'),
           h('li', {}, 'Make sure your head, shoulders, elbows and hands are in frame.'),
           h('li', {}, 'Hold your guard for 2 seconds to calibrate, then press Ready.'),
         ),
