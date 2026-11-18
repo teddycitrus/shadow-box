@@ -21,6 +21,22 @@ const SLOW_MS = 2_000;
 /** Measuring starts this long after tracking starts (the first frames include GPU warm-up). */
 const WARMUP_MS = 1_500;
 
+/**
+ * Where tracked frames are lost, over the last second. Skipped frames never reached the model
+ * (it or the page was busy); lost frames went through it but no pose was found (blur, framing).
+ */
+export interface TrackerHealth {
+  /** Frame rate the camera reports it is set to, or null when the browser does not say. */
+  cameraFps: number | null;
+  /** Camera frames delivered (tracked plus skipped). */
+  deliveredFps: number;
+  trackedFps: number;
+  skippedPerSec: number;
+  lostPerSec: number;
+  detectMs: number;
+  backend: 'main' | 'worker';
+}
+
 /** Webcam plus MediaPipe Pose Landmarker, all assets served locally. */
 export class PoseTracker {
   readonly video = document.createElement('video');
@@ -35,6 +51,7 @@ export class PoseTracker {
   private detectMs: number[] = [];
   private presented = -1;
   private skipTimes: number[] = [];
+  private lostTimes: number[] = [];
   private startedAt = 0;
   private slowSince: number | null = null;
   /** While trying lite: the full model's tracking rate and when lite started. */
@@ -55,6 +72,22 @@ export class PoseTracker {
   /** Mean detection time over the recent frames, in ms. */
   get detectTime(): number {
     return this.detectMs.length ? this.detectMs.reduce((a, b) => a + b, 0) / this.detectMs.length : 0;
+  }
+
+  get health(): TrackerHealth {
+    const now = performance.now();
+    for (const ts of [this.skipTimes, this.lostTimes]) while (ts.length && now - ts[0] >= 1000) ts.shift();
+    const tracked = this.fps;
+    const track = (this.video.srcObject as MediaStream | null)?.getVideoTracks()[0];
+    return {
+      cameraFps: track?.getSettings().frameRate ?? null,
+      deliveredFps: tracked + this.skipTimes.length,
+      trackedFps: tracked,
+      skippedPerSec: this.skipTimes.length,
+      lostPerSec: this.lostTimes.length,
+      detectMs: this.detectTime,
+      backend: 'main',
+    };
   }
 
   async start(): Promise<void> {
@@ -150,6 +183,8 @@ export class PoseTracker {
     const img = res.landmarks[0];
     const world = res.worldLandmarks[0];
     if (!img || !world) {
+      this.lostTimes.push(t1);
+      if (this.lostTimes.length > 120) this.lostTimes.shift();
       this.onFrame(null);
       return;
     }

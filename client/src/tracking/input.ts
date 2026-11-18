@@ -5,7 +5,7 @@ import { Classifier, type ClassifierOutput } from './classifier.ts';
 import { SessionLog } from './session.ts';
 import { Teacher, handFor, modelFrom, type MoveScore, type Profile, type TeachStatus } from './teach.ts';
 import type { Lm, PoseFrame } from './frame.ts';
-import { PoseTracker } from './pose.ts';
+import { PoseTracker, type TrackerHealth } from './pose.ts';
 import { loadPrior, priorSamples, uploadCalibration } from './share.ts';
 import { PUNCH_TIMING, punchDuration, synthPose, type SynthPunch } from './synthetic.ts';
 
@@ -28,6 +28,8 @@ export interface InputSource {
   readonly calibration: Calibration | null;
   readonly video: HTMLVideoElement | null;
   readonly stats: string;
+  /** Camera and tracking frame rates, or null without a camera. */
+  readonly health: TrackerHealth | null;
   /** Guided punch teaching in progress, or null. */
   readonly teach: TeachStatus | null;
   /** Moves learned for this player, empty when using the default rules. */
@@ -76,6 +78,7 @@ export class CameraInput implements InputSource {
   private lastTeachIndex = -1;
   private lastTeachKey = '';
   private lastDefenseKey = '';
+  private lastHealthLog = -Infinity;
 
   get calibrated(): boolean {
     return this.classifier !== null && this.teacher === null;
@@ -87,7 +90,13 @@ export class CameraInput implements InputSource {
 
   get stats(): string {
     const tr = this.tracker;
-    return tr.delegate ? `${tr.delegate} ${tr.model} ${tr.fps} fps ${tr.detectTime.toFixed(0)} ms` : 'loading';
+    if (!tr.delegate) return 'loading';
+    const hl = tr.health;
+    return `${tr.delegate} ${tr.model} ${hl.trackedFps}/${hl.deliveredFps} fps ${hl.detectMs.toFixed(0)} ms, skip ${hl.skippedPerSec} lost ${hl.lostPerSec}`;
+  }
+
+  get health(): TrackerHealth | null {
+    return this.tracker.delegate ? this.tracker.health : null;
   }
 
   async start(): Promise<void> {
@@ -158,6 +167,11 @@ export class CameraInput implements InputSource {
   private handle(f: PoseFrame | null): void {
     this.frame = f;
     if (f) this.log?.frame(f);
+    const now = performance.now();
+    if (this.log && now - this.lastHealthLog >= 1000) {
+      this.lastHealthLog = now;
+      this.log.mark(f?.t ?? now, 'health', this.tracker.health);
+    }
     if (!this.classifier) {
       this.status = this.calibrator.update(f);
       if (this.status.stage === 'done') {
@@ -245,6 +259,7 @@ export class KeyInput implements InputSource {
   readonly calibration = null;
   readonly video = null;
   readonly stats = 'keyboard';
+  readonly health = null;
   readonly teach = null;
   readonly learned = [];
   readonly scores = [];
