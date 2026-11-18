@@ -38,6 +38,8 @@ export interface TrackerHealth {
   lostPerSec: number;
   detectMs: number;
   backend: 'main' | 'worker';
+  delegate: 'GPU' | 'CPU' | null;
+  model: PoseModel;
   /** Manual exposure applied with ?exposure=, in ms, or null for the camera's auto exposure. */
   exposureMs: number | null;
 }
@@ -119,6 +121,8 @@ export class PoseTracker {
       lostPerSec: this.lostTimes.length,
       detectMs: this.detectTime,
       backend: this.worker ? 'worker' : 'main',
+      delegate: this.delegate,
+      model: this.model,
       exposureMs: this.exposureMs,
     };
   }
