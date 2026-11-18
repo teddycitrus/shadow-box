@@ -32,21 +32,36 @@ export const CONFIG = {
     startDist: 0.3,
     startSpeed: 3.0,
     stopFraction: 0.25,
+    /** A motion stalls once it has been under stopFraction for stallFrames frames and stallMs
+     *  (counted from halfway into the first slow frame's gap), so fast cameras do not cut it short. */
+    stallFrames: 2 as number,
+    stallMs: 40 as number,
     reverseFraction: 0.8,
     maxDurationMs: 550,
+    /** Hand velocity, and the frame-to-frame comparisons (moving away from rest, turning round, the
+     *  walk back to where a motion started), span the previous frame or, when that is under
+     *  minSpanMs old, the latest frame at least that old: on a fast camera single-frame steps are
+     *  mostly landmark jitter. Under the gaps of a 25 to 30 fps camera this is the previous frame. */
+    minSpanMs: 25 as number,
     /** Fire as soon as the hand stops getting further from rest (peakConfirmFrames frames past the
      *  furthest point, and back under peakConfirmDrop of that distance) instead of waiting for the
      *  motion to end. A motion that does not read as a punch then is decided again at its end. */
     earlyFire: true as boolean,
     peakConfirmFrames: 1 as number,
+    /** The early read also waits until peakConfirmMs past the peak, so a fast camera does not read a turn from one jittery frame. */
+    peakConfirmMs: 25 as number,
     peakConfirmDrop: 1 as number,
+    /** A segment's path (and its head dip) runs pathAfterFrames frames past the peak, and at least pathAfterMs. */
+    pathAfterFrames: 2 as number,
+    pathAfterMs: 80 as number,
     /** Past the peak the hand must be heading back toward rest (cosine to the way home) or nearly stopped. */
     peakReturnCos: 0.5 as number,
     /** Gate: a punch travels at least this far from rest, at least this fast at some point. */
     minTravel: 0.55,
     minPeakSpeed: 4.0,
     /** Frame-gap correction for the speed gate: none up to gapBoostFromMs, then the measured speed is
-     *  divided by 1 - (gap - from) / span, at most by gapBoostMin. */
+     *  divided by 1 - (gap - from) / span, at most by gapBoostMin. The gap is the time the speed was
+     *  measured over (see minSpanMs). */
     gapBoostFromMs: 50 as number,
     gapBoostSpanMs: 350 as number,
     gapBoostMin: 0.75 as number,

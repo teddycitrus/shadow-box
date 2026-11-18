@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { fixtureReps, labelledSegments, loadFixtures, scoreCalibration, type Recording } from '../scripts/eval-core.ts';
 import { Calibrator, framingCheck, measure } from '../client/src/tracking/calibration.ts';
 import { Classifier } from '../client/src/tracking/classifier.ts';
-import { KnnModel, vector } from '../client/src/tracking/model.ts';
+import { KnnModel, kindOf, vector } from '../client/src/tracking/model.ts';
+import { handFor } from '../client/src/tracking/teach.ts';
+import { fires as rateFires, measureJitter, upsample } from '../scripts/eval-rate.ts';
 import type { PoseFrame } from '../client/src/tracking/frame.ts';
 import { synthFrame, type SynthState } from '../client/src/tracking/synthetic.ts';
 import { NO_DEFENSE, type DefenseState, type Punch, type PunchType, type Stance, type Target } from '../shared/types.ts';
@@ -227,6 +229,35 @@ describe('recorded fixtures (tests/fixtures, see FIXTURES.md)', () => {
     expect(lags.length).toBeGreaterThan(20);
     expect(Math.min(...lags)).toBeGreaterThanOrEqual(0);
     expect(lags.filter((n) => n <= 2).length / lags.length).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it.skipIf(!hasPunches || !byName('guard'))('fires the same punches, as long after the peak, on a 50 to 60 fps camera', () => {
+    // Each clip upsampled to about 2x and 2.4x its recorded rate, with recorded-size jitter (scripts/eval-rate.ts).
+    // Counting frames instead of time would fire about half as long after the peak.
+    const m = new KnnModel(segs.map((s) => ({ hand: s.seg.hand, label: s.label, v: vector(s.seg) })));
+    const jitter = measureJitter(byName('guard')!.rec);
+    const clips = fixtures.filter((f) => f.rec.expected?.length);
+    const score = (factor: number) => {
+      let right = 0, extra = 0;
+      const delay: number[] = [];
+      clips.forEach(({ file, rec }, i) => {
+        const r = factor === 1 ? rec : upsample(rec, factor, jitter, i + 1);
+        const reps = fixtureReps(file).map((t) => rec.frames[0].t + t * 1000);
+        const got = rateFires(r, (seg) => m.decide(seg, 'orthodox'));
+        const hand = handFor(rec.expected![0], rec.stance ?? 'orthodox');
+        for (const at of reps) if (got.some((p) => p.hand === hand && kindOf(p.type) === kindOf(rec.expected![0]) && Math.abs(p.at - at) <= 350)) right++;
+        extra += got.filter((p) => reps.every((at) => Math.abs(p.at - at) > 350)).length;
+        delay.push(...got.map((p) => p.fireT - p.at));
+      });
+      return { right, extra, delay: delay.sort((a, b) => a - b)[Math.floor(delay.length / 2)] };
+    };
+    const native = score(1);
+    for (const factor of [2, 2.4]) {
+      const s = score(factor);
+      expect(s.right, `${factor}x`).toBeGreaterThanOrEqual(native.right - 1);
+      expect(s.extra, `${factor}x`).toBeLessThanOrEqual(native.extra + 1);
+      expect(s.delay, `${factor}x`).toBeGreaterThanOrEqual(native.delay * 0.7);
+    }
   });
 
   const onsets = (rec: Recording) => {

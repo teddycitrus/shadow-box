@@ -83,7 +83,7 @@ export interface Segment {
   start: PathPoint;
   peak: PathPoint;
   nose: P2;
-  /** Every frame from the rest position to the peak (inclusive), plus up to two frames after. */
+  /** Every frame from the rest position to the peak (inclusive), plus up to two frames after (and at least CONFIG.punch.pathAfterMs). */
   path: PathPoint[];
   /** How far the other hand moved over the same time, in sw (both hands moving together is not a punch). */
   other: number;
@@ -102,6 +102,8 @@ interface Sample {
   t: number;
   /** Time since the previous frame (ms), 0 for the first. */
   gap: number;
+  /** Time the velocity was measured over (ms, see CONFIG.punch.minSpanMs), 0 for the first frame. */
+  span: number;
   p: PathPoint;
   f: HandFeatures;
   z: number;
@@ -122,6 +124,8 @@ interface Active {
   gateSpeed: number;
   maxUp: number;
   stall: number;
+  /** When the current stall began (halfway into the first slow frame's gap). */
+  stallT: number;
   /** Time of the last peak already read early (each candidate peak is read once). */
   checkedPeakT: number;
 }
@@ -264,7 +268,7 @@ export class Classifier {
     const ws = f.world[idx.shoulder], ww = f.world[idx.wrist];
     const wz = ww.z;
     const s = sideSign(hand);
-    const prev = buf.length ? buf[buf.length - 1] : undefined;
+    const prev = spanBack(buf, f.t, buf.length - 1);
     const dt = prev ? (f.t - prev.t) / 1000 : 0;
     let vIn = 0, vUp = 0, vFwd = 0;
     const x = (-s * (w.x - neckX)) / sw, y = -(w.y - neckY) / sw;
@@ -285,7 +289,8 @@ export class Classifier {
     };
     return {
       t: f.t,
-      gap: prev ? f.t - prev.t : 0,
+      gap: buf.length ? f.t - buf[buf.length - 1].t : 0,
+      span: prev ? f.t - prev.t : 0,
       p: { t: f.t, x, y, ex: (-s * (e.x - neckX)) / sw, ey: -(e.y - neckY) / sw, s: hf.scale },
       f: hf,
       z: wz,
@@ -374,7 +379,7 @@ export class Classifier {
         st.home = null;
         return null;
       }
-      const prev = st.buf.at(-2);
+      const prev = spanBack(buf, t, buf.length - 2);
       const prevDist = prev ? Math.hypot(prev.p.x - st.anchor.x, prev.p.y - st.anchor.y) : 0;
       const d0 = Math.hypot(smp.p.x - st.anchor.x, smp.p.y - st.anchor.y);
       if (d0 < c.startDist || d0 <= prevDist) {
@@ -383,17 +388,19 @@ export class Classifier {
       }
       // The motion starts at the last frame the hand was still near its rest position.
       const ax = st.anchor.x, ay = st.anchor.y;
+      // Walking back, a frame no nearer than the last one only ends the search once it is minSpanMs
+      // older (a single jittery frame on a fast camera does not cut the motion short).
       let i = buf.length - 1;
       let di = Math.hypot(buf[i].p.x - ax, buf[i].p.y - ay);
-      while (i > 0) {
-        const q = buf[i - 1];
-        const dq = Math.hypot(q.p.x - ax, q.p.y - ay);
-        if (!(dq < di && t - q.t < c.maxDurationMs)) break;
-        i--;
-        di = dq;
+      for (let j = i - 1; j >= 0 && t - buf[j].t < c.maxDurationMs; j--) {
+        const dq = Math.hypot(buf[j].p.x - ax, buf[j].p.y - ay);
+        if (dq < di) {
+          i = j;
+          di = dq;
+        } else if (buf[i].t - buf[j].t >= c.minSpanMs) break;
       }
       st.mode = 'active';
-      st.active = { startIdx: i, anchor: { x: ax, y: ay }, maxD: 0, home: st.home, peakIdx: i, maxSpeed: 0, gateSpeed: 0, maxUp: 0, stall: 0, checkedPeakT: -Infinity };
+      st.active = { startIdx: i, anchor: { x: ax, y: ay }, maxD: 0, home: st.home, peakIdx: i, maxSpeed: 0, gateSpeed: 0, maxUp: 0, stall: 0, stallT: t, checkedPeakT: -Infinity };
       st.home = null;
       for (let j = i; j < st.buf.length - 1; j++) this.track(st.active, st.buf[j], j);
     }
@@ -401,10 +408,12 @@ export class Classifier {
     st.lastMotion = t;
     this.track(a, smp, st.buf.length - 1);
     const d = Math.hypot(smp.p.x - a.anchor.x, smp.p.y - a.anchor.y);
-    a.stall = speed < a.maxSpeed * c.stopFraction ? a.stall + 1 : 0;
+    if (speed < a.maxSpeed * c.stopFraction) {
+      if (!a.stall++) a.stallT = t - smp.gap / 2;
+    } else a.stall = 0;
     const reversed = a.maxD >= c.minTravel * 0.5 && d < a.maxD * c.reverseFraction;
     const travel = this.travel(a, st.buf[a.peakIdx].p);
-    const stopped = travel >= c.minTravel && a.stall >= 2;
+    const stopped = travel >= c.minTravel && a.stall >= c.stallFrames && t - a.stallT >= c.stallMs;
     const tooLong = t - st.buf[a.startIdx].t > c.maxDurationMs;
     const aborted = travel < c.minTravel && d < c.startDist * 0.5;
     if (aborted) {
@@ -417,7 +426,7 @@ export class Classifier {
       // and fire right away when it is a punch; otherwise keep following it and decide at the end.
       const pk = st.buf[a.peakIdx];
       const since = st.buf.length - 1 - a.peakIdx;
-      if (c.earlyFire && since >= c.peakConfirmFrames && pk.t !== a.checkedPeakT && travel >= c.minTravel && d <= a.maxD * c.peakConfirmDrop && this.pastPeak(a, pk.p, smp)) {
+      if (c.earlyFire && since >= c.peakConfirmFrames && t - pk.t >= c.peakConfirmMs && pk.t !== a.checkedPeakT && travel >= c.minTravel && d <= a.maxD * c.peakConfirmDrop && this.pastPeak(a, pk.p, smp)) {
         a.checkedPeakT = pk.t;
         const seg = this.segment(hand, st, a, chinY, t);
         const r = this.decide(seg);
@@ -437,7 +446,7 @@ export class Classifier {
     const c = CONFIG.punch;
     if (!c.relaunch) return false;
     const p = st.pivot;
-    const prev = st.buf.at(-2);
+    const prev = spanBack(st.buf, smp.t, st.buf.length - 2);
     if (!p || along < p.along) {
       // The direction the hand arrived from, to tell a turn from a sweep that carries on.
       const dx = prev ? smp.p.x - prev.p.x : 0, dy = prev ? smp.p.y - prev.p.y : 0;
@@ -475,7 +484,7 @@ export class Classifier {
       a.peakIdx = idx;
     }
     a.maxSpeed = Math.max(a.maxSpeed, s.f.speed);
-    a.gateSpeed = Math.max(a.gateSpeed, s.f.speed * gapBoost(s.gap));
+    a.gateSpeed = Math.max(a.gateSpeed, s.f.speed * gapBoost(s.span));
     a.maxUp = Math.max(a.maxUp, s.f.vUp);
   }
 
@@ -519,7 +528,8 @@ export class Classifier {
     const s0 = st.buf[a.startIdx];
     const pk = st.buf[a.peakIdx];
     const buf = st.buf;
-    const end = Math.min(buf.length, a.peakIdx + 3);
+    let end = Math.min(buf.length, a.peakIdx + 1 + CONFIG.punch.pathAfterFrames);
+    while (end < buf.length && buf[end].t - pk.t <= CONFIG.punch.pathAfterMs) end++;
     const path: PathPoint[] = [];
     for (let i = a.startIdx; i < end; i++) path.push(buf[i].p);
     const start: PathPoint = { ...s0.p, x: a.anchor.x, y: a.anchor.y };
@@ -620,6 +630,17 @@ function ruleDecision(seg: Segment, stance: Stance, bodyDip: number = CONFIG.pun
 function gapBoost(gapMs: number): number {
   const c = CONFIG.punch;
   return 1 / Math.max(c.gapBoostMin, 1 - Math.max(0, gapMs - c.gapBoostFromMs) / c.gapBoostSpanMs);
+}
+
+/**
+ * The sample velocities and frame-to-frame comparisons measure against: the latest of buf[0..from]
+ * at least minSpanMs before t (the previous frame at normal frame rates), else the oldest.
+ */
+function spanBack(buf: Sample[], t: number, from: number): Sample | undefined {
+  const ms = CONFIG.punch.minSpanMs;
+  let i = from;
+  while (i > 0 && t - buf[i].t < ms) i--;
+  return i >= 0 ? buf[i] : undefined;
 }
 
 function newHand(): HandState {
